@@ -1,0 +1,1702 @@
+/* ============================================
+   OLANGA VOICE ASSISTANT - RENDERER
+   Uses Vosk (WASM) for local Wake Word detection,
+   then raw PCM capture → WAV encoding → Gemini audio API
+   ============================================ */
+
+// ---- State Machine ----
+const State = {
+  IDLE: 'idle',           // Monitoring mic with Vosk for "Hey Olanga"
+  LISTENING: 'listening', // Recording user query (post-wake-word)
+  THINKING: 'thinking',   // Waiting for AI response
+  SPEAKING: 'speaking'    // Speaking the response
+};
+
+let currentState = State.IDLE;
+let apiKeys = [];
+let apiKeyRotation = false;
+let currentKeyIndex = 0;
+let apiKey = ''; // current active key
+let nvidiaApiKey = ''; // NVIDIA API key for TTS
+let userCity = '';
+let userState = '';
+let userCountry = '';
+let synthesis = window.speechSynthesis;
+let conversationHistory = []; // {role: 'user'|'model', text: '...'}
+let orbCanvasCtx = null;
+let animationFrameId = null;
+
+// Audio capture
+let audioContext = null;
+let analyser = null;
+let micStream = null;
+let scriptNode = null;
+let pcmChunks = [];
+let isRecording = false;
+let speechStartTime = null;
+let silenceStartTime = null;
+let followUpTimer = null;
+let currentRMS = 0;
+let hasSpokenDuringRecording = false;
+let currentTTSAudio = null; // Reference to current TTS audio element
+let isMuted = false;
+let currentVolume = 0.8; // 0-1 range
+let isMicMuted = false;
+let activeTimers = [];
+let alarmIntervalId = null;
+let activeTasks = [];
+
+// Vosk Wake Word
+let voskModel = null;
+let voskRecognizer = null;
+let isVoskReady = false;
+
+// Tuning
+const SPEECH_THRESHOLD = 6;      // RMS above this = speech detected (during listening mode)
+const SILENCE_THRESHOLD = 4;     // RMS below this = silence
+const SILENCE_DURATION = 1500;   // ms of silence to finalize recording
+const MIN_SPEECH_DURATION = 500; // minimum ms of speech to bother processing
+const FOLLOW_UP_WINDOW = 4000;   // ms to wait for follow-up after speaking
+const WAKE_WORDS = [
+    "hey", "hail", "hey olanga", "hey alanga", "hay olanga", "a olanga", "hey longo", "he olanga",
+    "hey along the", "hail longer", "hey or longer", "hey longer", "hail along the", "hey alonso"
+];
+
+// ---- DOM Elements ----
+const setupScreen = document.getElementById('setupScreen');
+const mainScreen = document.getElementById('mainScreen');
+const apiKeyInput = document.getElementById('apiKeyInput');
+const nvidiaKeyInput = document.getElementById('nvidiaKeyInput');
+const saveKeyBtn = document.getElementById('saveKeyBtn');
+const getKeyLink = document.getElementById('getKeyLink');
+const clockDisplay = document.getElementById('clockDisplay');
+const orbContainer = document.getElementById('orbContainer');
+const orbGlow = document.getElementById('orbGlow');
+const orb = document.getElementById('orb');
+const orbCanvas = document.getElementById('orbCanvas');
+const waveBars = document.getElementById('waveBars');
+const waveBarEls = document.querySelectorAll('.wave-bar');
+const transcriptUser = document.getElementById('transcriptUser');
+const transcriptAi = document.getElementById('transcriptAi');
+const userText = document.getElementById('userText');
+const aiText = document.getElementById('aiText');
+const hint = document.getElementById('hint');
+const minimizeBtn = document.getElementById('minimizeBtn');
+const closeBtn = document.getElementById('closeBtn');
+const settingsBtn = document.getElementById('settingsBtn');
+const settingsModal = document.getElementById('settingsModal');
+const closeSettingsBtn = document.getElementById('closeSettingsBtn');
+const keyListContainer = document.getElementById('keyListContainer');
+const newKeyInput = document.getElementById('newKeyInput');
+const addKeyBtn = document.getElementById('addKeyBtn');
+const nvidiaSettingsKeyInput = document.getElementById('nvidiaSettingsKeyInput');
+const addNvidiaKeyBtn = document.getElementById('addNvidiaKeyBtn');
+const rotationToggle = document.getElementById('rotationToggle');
+const cityInput = document.getElementById('cityInput');
+const stateInput = document.getElementById('stateInput');
+const countryInput = document.getElementById('countryInput');
+const dateDisplay = document.getElementById('dateDisplay');
+const micToggleBtn = document.getElementById('micToggleBtn');
+const micIconOn = document.getElementById('micIconOn');
+const micIconOff = document.getElementById('micIconOff');
+const timersContainer = document.getElementById('timersList');
+
+// ---- Initialize ----
+function init() {
+  // Audio controls first (independent of API keys)
+  initAudioControls();
+
+  minimizeBtn.addEventListener('click', () => window.electronAPI.minimize());
+  closeBtn.addEventListener('click', () => window.electronAPI.close());
+
+  getKeyLink.addEventListener('click', () => {
+    window.electronAPI.openExternal('https://aistudio.google.com/apikey');
+  });
+
+  // Start clock + date
+  setInterval(updateClock, 1000);
+  updateClock();
+
+  saveKeyBtn.addEventListener('click', handleSaveKey);
+  apiKeyInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') handleSaveKey();
+  });
+
+  // Settings DOM binding
+  settingsBtn.addEventListener('click', () => {
+    renderKeyList();
+    rotationToggle.checked = apiKeyRotation;
+    settingsModal.classList.remove('hidden');
+  });
+  closeSettingsBtn.addEventListener('click', () => {
+    settingsModal.classList.add('hidden');
+  });
+  addKeyBtn.addEventListener('click', handleAddKeyFromSettings);
+  newKeyInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') handleAddKeyFromSettings();
+  });
+  rotationToggle.addEventListener('change', (e) => {
+    apiKeyRotation = e.target.checked;
+    localStorage.setItem('olanga_key_rotation', apiKeyRotation);
+  });
+
+  // Location bindings
+  const saveLocation = () => {
+    userCity = cityInput.value.trim();
+    userState = stateInput.value.trim();
+    userCountry = countryInput.value.trim();
+    localStorage.setItem('olanga_city', userCity);
+    localStorage.setItem('olanga_state', userState);
+    localStorage.setItem('olanga_country', userCountry);
+  };
+  cityInput.addEventListener('input', saveLocation);
+  stateInput.addEventListener('input', saveLocation);
+  countryInput.addEventListener('input', saveLocation);
+
+  // Load keys and location
+  let storedKeys = [];
+  try {
+    const rawKeys = localStorage.getItem('olanga_api_keys');
+    if (rawKeys) {
+      storedKeys = JSON.parse(rawKeys);
+    }
+    if (!Array.isArray(storedKeys)) storedKeys = [];
+  } catch (e) {
+    console.error("Failed to parse stored API keys", e);
+    storedKeys = [];
+  }
+
+  nvidiaApiKey = localStorage.getItem('olanga_nvidia_key') || '';
+  nvidiaSettingsKeyInput.value = nvidiaApiKey;
+
+  const storedRotation = localStorage.getItem('olanga_key_rotation') === 'true';
+  
+  if (storedKeys.length > 0) {
+    apiKeys = storedKeys;
+    apiKeyRotation = storedRotation;
+    apiKey = apiKeys[0];
+    showMainScreen();
+  } else {
+    // Legacy fallback
+    const legacyKey = localStorage.getItem('olanga_api_key');
+    if (legacyKey) {
+      apiKeys = [legacyKey];
+      apiKey = legacyKey;
+      localStorage.setItem('olanga_api_keys', JSON.stringify(apiKeys));
+      showMainScreen();
+    }
+  }
+
+  userCity = localStorage.getItem('olanga_city') || '';
+  userState = localStorage.getItem('olanga_state') || '';
+  userCountry = localStorage.getItem('olanga_country') || '';
+  cityInput.value = userCity;
+  stateInput.value = userState;
+  countryInput.value = userCountry;
+
+  // Tasks bindings
+  const tasksClearBtn = document.getElementById('tasksClearBtn');
+  const taskInput = document.getElementById('taskInput');
+  const addTaskBtn = document.getElementById('addTaskBtn');
+
+  if (tasksClearBtn) {
+    tasksClearBtn.addEventListener('click', clearAllTasks);
+  }
+
+  const handleManualAddTask = () => {
+    const text = taskInput.value.trim();
+    if (text) {
+      addTask(text);
+      taskInput.value = '';
+    }
+  };
+
+  if (addTaskBtn) {
+    addTaskBtn.addEventListener('click', handleManualAddTask);
+  }
+
+  if (taskInput) {
+    taskInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') handleManualAddTask();
+    });
+  }
+
+  // Load and render initial tasks
+  loadTasks();
+  renderTasks();
+
+  // Timer widget bindings
+  const timersClearBtn = document.getElementById('timersClearBtn');
+  const timerInput = document.getElementById('timerInput');
+  const addTimerBtn = document.getElementById('addTimerBtn');
+
+  if (timersClearBtn) {
+    timersClearBtn.addEventListener('click', clearAllTimers);
+  }
+
+  const handleManualAddTimer = () => {
+    const raw = timerInput.value.trim();
+    if (!raw) return;
+    const seconds = parseTimerInput(raw);
+    if (seconds > 0) {
+      createTimer(seconds);
+      timerInput.value = '';
+    }
+  };
+
+  if (addTimerBtn) {
+    addTimerBtn.addEventListener('click', handleManualAddTimer);
+  }
+
+  if (timerInput) {
+    timerInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') handleManualAddTimer();
+    });
+  }
+
+  // Render initial timers (shows empty state)
+  renderTimers();
+
+  orbCanvasCtx = orbCanvas.getContext('2d');
+  startOrbAnimation();
+}
+
+// ---- API Key Setup ----
+function handleSaveKey() {
+  const key = apiKeyInput.value.trim();
+  const nKey = nvidiaKeyInput.value.trim();
+  if (!key) {
+    showError('Please enter your Gemini API key');
+    return;
+  }
+  if (!apiKeys.includes(key)) {
+    apiKeys.push(key);
+  }
+  apiKey = key;
+  localStorage.setItem('olanga_api_keys', JSON.stringify(apiKeys));
+  
+  if (nKey) {
+    nvidiaApiKey = nKey;
+    localStorage.setItem('olanga_nvidia_key', nKey);
+    nvidiaSettingsKeyInput.value = nKey;
+  }
+  showMainScreen();
+}
+
+function handleAddKeyFromSettings() {
+  const key = newKeyInput.value.trim();
+  if (!key) return;
+  if (!apiKeys.includes(key)) {
+    apiKeys.push(key);
+    localStorage.setItem('olanga_api_keys', JSON.stringify(apiKeys));
+  }
+  newKeyInput.value = '';
+  renderKeyList();
+}
+
+addNvidiaKeyBtn.addEventListener('click', () => {
+  const nKey = nvidiaSettingsKeyInput.value.trim();
+  nvidiaApiKey = nKey;
+  localStorage.setItem('olanga_nvidia_key', nKey);
+});
+
+function renderKeyList() {
+  keyListContainer.innerHTML = '';
+  if (apiKeys.length === 0) {
+    keyListContainer.innerHTML = '<span style="color:var(--text-dim);font-size:12px;">No keys saved.</span>';
+    return;
+  }
+  apiKeys.forEach((k, i) => {
+    const div = document.createElement('div');
+    div.className = 'key-item' + (k === apiKey ? ' active' : '');
+    div.innerHTML = `
+      <span class="key-item-text">Key ${i + 1}: ...${k.slice(-6)}</span>
+      <div class="key-item-actions">
+        <button class="key-btn select" data-key="${k}">Select</button>
+        <button class="key-btn delete" data-key="${k}">Del</button>
+      </div>
+    `;
+    keyListContainer.appendChild(div);
+  });
+
+  // Bind actions
+  keyListContainer.querySelectorAll('.select').forEach(b => {
+    b.addEventListener('click', (e) => {
+      apiKey = e.target.dataset.key;
+      currentKeyIndex = apiKeys.indexOf(apiKey);
+      renderKeyList();
+    });
+  });
+  keyListContainer.querySelectorAll('.delete').forEach(b => {
+    b.addEventListener('click', (e) => {
+      const k = e.target.dataset.key;
+      apiKeys = apiKeys.filter(x => x !== k);
+      if (apiKey === k) {
+        apiKey = apiKeys.length > 0 ? apiKeys[0] : '';
+        currentKeyIndex = 0;
+      }
+      localStorage.setItem('olanga_api_keys', JSON.stringify(apiKeys));
+      renderKeyList();
+    });
+  });
+}
+
+async function showMainScreen() {
+  setupScreen.classList.add('hidden');
+  mainScreen.classList.remove('hidden');
+  hint.textContent = "Loading offline wake word model...";
+  try {
+    await initVosk();
+    await initMicrophone();
+  } catch(e) {
+    console.error("Init error", e);
+    showError("Failed to initialize system: " + e.message);
+  }
+}
+
+let lastIdleTime = 0;
+
+// ---- State Management ----
+function setState(newState) {
+  const prev = currentState;
+  currentState = newState;
+
+  document.body.classList.remove('state-idle', 'state-listening', 'state-thinking', 'state-speaking');
+  document.body.classList.add(`state-${newState}`);
+
+  switch (newState) {
+    case State.IDLE:
+      lastIdleTime = Date.now();
+      conversationHistory = []; // Only contain memory for the current strand of conversation
+      hint.textContent = 'Listening for "Hey Olanga"...';
+      hint.classList.remove('hidden');
+      hint.innerHTML = 'Say <strong>"Hey Olanga"</strong> to start';
+      // Reset Vosk recognizer to clear old state
+      conversationHistory = [];
+      // hint.textContent = 'Say "Hey Olanga" to start'; 
+      if (voskRecognizer) {
+          try {
+              voskRecognizer.reset();
+          } catch(e) {}
+      }
+      break;
+    case State.LISTENING:
+      break;
+    case State.THINKING:
+      break;
+    case State.SPEAKING:
+      break;
+  }
+
+  console.log(`[Olanga] State: ${prev} → ${newState}`);
+}
+
+// ============================================
+// VOSK WAKE WORD DETECTION (OFFLINE)
+// ============================================
+async function initVosk() {
+    if (!window.Vosk) {
+        throw new Error("Vosk library not loaded");
+    }
+    console.log("[Olanga] Loading Vosk model from local tar.gz...");
+    
+    // We serve model.tar.gz via the relative path now that webSecurity is false
+    // Using v2 to bypass Electron's aggressive file caching
+    voskModel = await window.Vosk.createModel('./vosk-model-v2.tar.gz');
+    console.log("[Olanga] Vosk model loaded successfully.");
+    isVoskReady = true;
+}
+
+// ============================================
+// MICROPHONE + RAW PCM CAPTURE
+// ============================================
+
+async function initMicrophone() {
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: 1,
+        sampleRate: 16000 // Vosk works best at 16k
+      }
+    });
+
+    audioContext = new AudioContext({ sampleRate: 16000 });
+    const sampleRate = audioContext.sampleRate;
+    console.log(`[Olanga] AudioContext sample rate: ${sampleRate}`);
+
+    // Create Vosk recognizer
+    if (voskModel) {
+        voskRecognizer = new voskModel.KaldiRecognizer(sampleRate);
+        voskRecognizer.setWords(true);
+        voskRecognizer.on("result", (message) => {
+            handleVoskResult(message.result.text);
+        });
+        voskRecognizer.on("partialresult", (message) => {
+            handleVoskResult(message.result.partial);
+        });
+    }
+
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.85;
+
+      // ScriptProcessorNode to capture raw PCM samples
+      scriptNode = audioContext.createScriptProcessor(4096, 1, 1);
+      scriptNode.onaudioprocess = (e) => {
+        if (isMicMuted) return;
+        const inputData = e.inputBuffer.getChannelData(0);
+        
+        // If idle, feed to Vosk for Wake Word detection
+        if (currentState === State.IDLE && voskRecognizer && isVoskReady) {
+            voskRecognizer.acceptWaveformFloat(inputData, sampleRate);
+        }
+        
+        // If recording, collect chunks for Gemini
+        if (isRecording) {
+          pcmChunks.push(new Float32Array(inputData));
+        }
+      };
+
+    const source = audioContext.createMediaStreamSource(micStream);
+
+    // Connect: source → analyser (for VAD visualization)
+    source.connect(analyser);
+
+    // Connect: source → scriptProcessor → silent output (for PCM capture)
+    // Must connect to destination for onaudioprocess to fire, but mute it
+    const silentGain = audioContext.createGain();
+    silentGain.gain.value = 0;
+    source.connect(scriptNode);
+    scriptNode.connect(silentGain);
+    silentGain.connect(audioContext.destination);
+
+    console.log('[Olanga] ✅ Microphone initialized');
+    setState(State.IDLE);
+    monitorAudio();
+
+  } catch (err) {
+    console.error('[Olanga] Mic init error:', err);
+    showError('Microphone access denied or unavailable.');
+  }
+}
+
+// ============================================
+// VOSK RESULT HANDLER
+// ============================================
+function handleVoskResult(text) {
+    if (!text || currentState !== State.IDLE) return;
+    if (Date.now() - lastIdleTime < 1000) return; // 1-second cooldown to prevent immediate re-triggering
+    
+    text = text.toLowerCase();
+    console.log(`[Olanga Vosk] Hears: "${text}"`);
+    
+    // Check if any of the wake words are in the transcript using word boundaries
+    // This prevents "they" from triggering "hey"
+    if (WAKE_WORDS.some(ww => new RegExp(`\\b${ww}\\b`, 'i').test(text))) {
+        console.log(`[Olanga] Wake word detected locally! Transcript: "${text}"`);
+        
+        // Wake word detected! Clear the prompt and start listening for the actual query
+        setState(State.LISTENING);
+        startRecording();
+        
+        userText.textContent = "Listening...";
+        transcriptUser.classList.remove('hidden');
+        transcriptAi.classList.add('hidden');
+    }
+}
+
+// ============================================
+// VOICE ACTIVITY DETECTION (For Ending Recording)
+// ============================================
+
+function monitorAudio() {
+  if (currentState === State.THINKING || currentState === State.SPEAKING) {
+    requestAnimationFrame(monitorAudio);
+    return;
+  }
+
+  if (isMicMuted) {
+    currentRMS = 0;
+    updateWaveBars(0);
+    requestAnimationFrame(monitorAudio);
+    return;
+  }
+
+  const dataArray = new Uint8Array(analyser.fftSize);
+  analyser.getByteTimeDomainData(dataArray);
+
+  let sum = 0;
+  for (let i = 0; i < dataArray.length; i++) {
+    const val = (dataArray[i] - 128) / 128;
+    sum += val * val;
+  }
+  currentRMS = Math.sqrt(sum / dataArray.length) * 100;
+
+  updateWaveBars(currentRMS);
+
+  // VAD logic ONLY for stopping the recording once it has started
+  if (currentState === State.LISTENING) {
+      if (currentRMS > SPEECH_THRESHOLD) {
+        silenceStartTime = null;
+        if (!hasSpokenDuringRecording) {
+            hasSpokenDuringRecording = true;
+            speechStartTime = Date.now();
+            if (followUpTimer) {
+              clearTimeout(followUpTimer);
+              followUpTimer = null;
+            }
+        }
+      } else if (isRecording) {
+        if (!silenceStartTime) {
+          silenceStartTime = Date.now();
+        }
+        
+        // Wait 4 seconds for them to START speaking. If they're already speaking, wait 1.5s to STOP.
+        const timeout = hasSpokenDuringRecording ? SILENCE_DURATION : 4000;
+        
+        if (Date.now() - silenceStartTime > timeout) {
+          if (hasSpokenDuringRecording && (Date.now() - speechStartTime) > MIN_SPEECH_DURATION) {
+            stopRecording();
+          } else {
+            console.log('[Olanga] Recording timed out or too short (no speech), returning to IDLE');
+            cancelRecording();
+            setState(State.IDLE);
+          }
+        }
+      }
+  }
+
+  requestAnimationFrame(monitorAudio);
+}
+
+function updateWaveBars(rms) {
+  if (currentState !== State.LISTENING && currentState !== State.IDLE) return;
+  // If idle, don't show huge waves, just very tiny ones to indicate it's alive
+  let scale = (currentState === State.LISTENING) ? 2 : 0.5;
+
+  waveBarEls.forEach((bar, i) => {
+    const offset = Math.sin(Date.now() * 0.005 + i * 0.7) * 0.5 + 0.5;
+    const height = Math.max(4, Math.min(28, rms * scale * offset));
+    bar.style.height = `${height}px`;
+  });
+}
+
+// ============================================
+// RECORDING CONTROLS
+// ============================================
+
+function startRecording() {
+  if (isRecording) return;
+  isRecording = true;
+  pcmChunks = [];
+  speechStartTime = null;
+  silenceStartTime = Date.now(); // Start silence timer immediately for the 5s timeout
+  hasSpokenDuringRecording = false;
+  console.log('[Olanga] 🎙️ Recording user query started');
+}
+
+function stopRecording() {
+  if (!isRecording) return;
+  isRecording = false;
+
+  const isFollowUp = (currentState === State.LISTENING);
+
+  console.log(`[Olanga] 🎙️ Recording stopped — processing with Gemini`);
+  setState(State.THINKING);
+
+  // Combine all PCM chunks into one Float32Array
+  const totalLength = pcmChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  if (totalLength === 0) {
+    console.log('[Olanga] No audio data captured');
+    setState(State.IDLE);
+    pcmChunks = [];
+    speechStartTime = null;
+    silenceStartTime = null;
+    return;
+  }
+
+  const combined = new Float32Array(totalLength);
+  let offset = 0;
+  for (const chunk of pcmChunks) {
+    combined.set(chunk, offset);
+    offset += chunk.length;
+  }
+  pcmChunks = [];
+  speechStartTime = null;
+  silenceStartTime = null;
+
+  // Encode as WAV
+  const sampleRate = audioContext.sampleRate;
+  const wavBlob = encodeWAV(combined, sampleRate);
+  
+  processAudioBlobWithGemini(wavBlob);
+}
+
+function cancelRecording() {
+  if (!isRecording) return;
+  isRecording = false;
+  pcmChunks = [];
+  speechStartTime = null;
+  silenceStartTime = null;
+  hasSpokenDuringRecording = false;
+}
+
+// ============================================
+// WAV ENCODER
+// ============================================
+
+function encodeWAV(samples, sampleRate) {
+  const numChannels = 1;
+  const bitsPerSample = 16;
+  const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+  const blockAlign = numChannels * (bitsPerSample / 8);
+  const dataSize = samples.length * (bitsPerSample / 8);
+  const bufferSize = 44 + dataSize;
+
+  const buffer = new ArrayBuffer(bufferSize);
+  const view = new DataView(buffer);
+
+  writeString(view, 0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeString(view, 8, 'WAVE');
+
+  writeString(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);            
+  view.setUint16(20, 1, true);             
+  view.setUint16(22, numChannels, true);   
+  view.setUint32(24, sampleRate, true);    
+  view.setUint32(28, byteRate, true);      
+  view.setUint16(32, blockAlign, true);    
+  view.setUint16(34, bitsPerSample, true); 
+
+  writeString(view, 36, 'data');
+  view.setUint32(40, dataSize, true);
+
+  let writeOffset = 44;
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(writeOffset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    writeOffset += 2;
+  }
+
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
+function writeString(view, offset, string) {
+  for (let i = 0; i < string.length; i++) {
+    view.setUint8(offset + i, string.charCodeAt(i));
+  }
+}
+
+// ============================================
+// AUDIO → GEMINI API
+// ============================================
+
+async function processAudioBlobWithGemini(blob) {
+  try {
+    const base64Audio = await blobToBase64(blob);
+    console.log(`[Olanga] 🚀 Dispatching exactly ONE request to Gemini API (Payload size: ${Math.round(base64Audio.length / 1024)} KB)...`);
+
+    const response = await sendAudioToGemini(base64Audio);
+    
+    // Parse the structured response
+    let parsed = parseResponse(response);
+    
+    // If the model heard nothing, just go to sleep
+    if (parsed.response.trim() === '[SILENCE]') {
+      console.log('[Olanga] 🤐 Model heard nothing but silence/noise. Returning to IDLE.');
+      setState(State.IDLE);
+      return;
+    }
+
+    if (parsed.userSaid) {
+      userText.textContent = parsed.userSaid;
+      transcriptUser.classList.remove('hidden');
+    } else {
+        userText.textContent = "Audio received";
+    }
+
+    if (parsed.userSaid) {
+      conversationHistory.push({ role: 'user', text: parsed.userSaid });
+    }
+
+    let spokenResponse = parsed.response;
+    
+    // Intercept Open App command
+    const openAppMatch = spokenResponse.match(/\[OPEN_APP:\s*([^\]]+)\]/i);
+    if (openAppMatch) {
+      const appName = openAppMatch[1].trim();
+      console.log(`[Olanga] 🖥️ Opening App: ${appName}`);
+      window.electronAPI.openApp(appName);
+      spokenResponse = spokenResponse.replace(openAppMatch[0], '').trim();
+      if (!spokenResponse) spokenResponse = `Opening ${appName} for you now.`;
+    }
+
+    const spotifyMatch = spokenResponse.match(/\[SPOTIFY_(SONG|ALBUM|PLAYLIST|ARTIST):\s*([^\]]+)\]/i);
+    if (spotifyMatch) {
+      const type = spotifyMatch[1].toUpperCase();
+      const searchTerm = spotifyMatch[2].trim().replace(/^"|"$/g, ''); // Remove quotes if the AI adds them
+      console.log(`[Olanga] 🎵 Requesting Spotify play for ${type}: ${searchTerm}`);
+      window.electronAPI.playSpotify(type, searchTerm);
+      // Remove the command from the spoken response
+      spokenResponse = spokenResponse.replace(spotifyMatch[0], '').trim();
+      if (!spokenResponse) spokenResponse = `Playing your request on Spotify.`;
+    }
+
+    // Intercept Media/Volume commands
+    const mediaRegex = /\[(MEDIA_PLAY_PAUSE|MEDIA_NEXT|MEDIA_PREV|VOLUME_UP|VOLUME_DOWN|VOLUME_MUTE)\]/ig;
+    let mediaMatch;
+    while ((mediaMatch = mediaRegex.exec(spokenResponse)) !== null) {
+      const command = mediaMatch[1].toUpperCase();
+      console.log(`[Olanga] 🎛️ Media control requested: ${command}`);
+      window.electronAPI.mediaControl(command);
+    }
+    spokenResponse = spokenResponse.replace(mediaRegex, '').trim();
+
+    // Intercept Mic Mute/Unmute command
+    const micMuteRegex = /\[(MUTE_MIC|UNMUTE_MIC)\]/ig;
+    let micMuteMatch;
+    while ((micMuteMatch = micMuteRegex.exec(spokenResponse)) !== null) {
+      const command = micMuteMatch[1].toUpperCase();
+      console.log(`[Olanga] 🎙️ Mic control requested: ${command}`);
+      if (command === 'MUTE_MIC') {
+        muteMic();
+      } else if (command === 'UNMUTE_MIC') {
+        unmuteMic();
+      }
+    }
+    spokenResponse = spokenResponse.replace(micMuteRegex, '').trim();
+
+    // Intercept Timer commands
+    const setTimerMatch = spokenResponse.match(/\[SET_TIMER:\s*(\d+),\s*([^\]]+)\]/i);
+    if (setTimerMatch) {
+      const duration = parseInt(setTimerMatch[1]);
+      const label = setTimerMatch[2].trim();
+      console.log(`[Olanga] ⏱️ Timer requested: ${duration}s, labeled: ${label}`);
+      createTimer(duration, label);
+      spokenResponse = spokenResponse.replace(setTimerMatch[0], '').trim();
+    }
+
+    const cancelTimerMatch = spokenResponse.match(/\[CANCEL_TIMER:\s*([^\]]+)\]/i);
+    if (cancelTimerMatch) {
+      const label = cancelTimerMatch[1].trim();
+      console.log(`[Olanga] ⏱️ Cancel timer requested: ${label}`);
+      cancelTimerByLabel(label);
+      spokenResponse = spokenResponse.replace(cancelTimerMatch[0], '').trim();
+    }
+
+    // Intercept Task commands
+    const addTaskMatch = spokenResponse.match(/\[ADD_TASK:\s*([^,\]]+)(?:,\s*([^\]]+))?\]/i);
+    if (addTaskMatch) {
+      const text = addTaskMatch[1].trim();
+      const dueDate = addTaskMatch[2] ? addTaskMatch[2].trim() : null;
+      console.log(`[Olanga] 📋 Task add requested: "${text}", due: ${dueDate}`);
+      addTask(text, dueDate);
+      spokenResponse = spokenResponse.replace(addTaskMatch[0], '').trim();
+    }
+
+    const removeTaskMatch = spokenResponse.match(/\[REMOVE_TASK:\s*([^\]]+)\]/i);
+    if (removeTaskMatch) {
+      const target = removeTaskMatch[1].trim();
+      console.log(`[Olanga] 📋 Task remove requested for: "${target}"`);
+      removeTask(target);
+      spokenResponse = spokenResponse.replace(removeTaskMatch[0], '').trim();
+    }
+
+    const clearTasksMatch = spokenResponse.match(/\[CLEAR_ALL_TASKS\]/i);
+    if (clearTasksMatch) {
+      console.log(`[Olanga] 📋 Task clear all requested`);
+      clearAllTasks();
+      spokenResponse = spokenResponse.replace(clearTasksMatch[0], '').trim();
+    }
+
+    const setTaskDueMatch = spokenResponse.match(/\[SET_TASK_DUE:\s*([^,\]]+),\s*([^\]]+)\]/i);
+    if (setTaskDueMatch) {
+      const target = setTaskDueMatch[1].trim();
+      const dueDate = setTaskDueMatch[2].trim();
+      console.log(`[Olanga] 📋 Task due date update requested for: "${target}" to "${dueDate}"`);
+      setTaskDue(target, dueDate);
+      spokenResponse = spokenResponse.replace(setTaskDueMatch[0], '').trim();
+    }
+
+    // Intercept Screenshot request
+    if (spokenResponse.includes('[REQUEST_SCREENSHOT]')) {
+      console.log(`[Olanga] 📸 Screenshot requested by AI`);
+      aiText.textContent = "Please select an area on your screen...";
+      const base64Image = await window.electronAPI.requestScreenshot();
+      if (!base64Image) {
+        console.log(`[Olanga] 📸 Screenshot cancelled by user or timed out`);
+        aiText.textContent = "Screenshot cancelled.";
+        setState(State.IDLE);
+        return;
+      }
+      aiText.textContent = "Processing image...";
+      const secondResponseRaw = await sendAudioToGemini(base64Audio, base64Image, parsed.userSaid);
+      parsed = parseResponse(secondResponseRaw);
+      spokenResponse = parsed.response;
+    }
+
+    conversationHistory.push({ role: 'model', text: spokenResponse });
+
+    if (conversationHistory.length > 20) {
+      conversationHistory = conversationHistory.slice(-16);
+    }
+
+    aiText.textContent = spokenResponse;
+    transcriptAi.classList.remove('hidden');
+    
+    speakResponse(spokenResponse);
+
+  } catch (error) {
+    console.error('[Olanga] ❌ Processing error:', error);
+    showError(error.message || 'Failed to process audio');
+    setState(State.IDLE);
+  }
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const base64 = reader.result.split(',')[1];
+      resolve(base64);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function sendAudioToGemini(base64Audio, base64Image = null, userSaidContext = null) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+
+  let locationContext = '';
+  if (userCity || userState || userCountry) {
+    locationContext = `\nThe user is currently located in: ${[userCity, userState, userCountry].filter(Boolean).join(', ')}.`;
+  }
+
+  const currentTime = new Date().toLocaleString('en-US', { 
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', 
+    hour: '2-digit', minute: '2-digit', second: '2-digit', timeZoneName: 'short' 
+  });
+  
+  const timeContext = `\nThe current local time for the user is: ${currentTime}. Use this exact time and location for all temporal or local queries.`;
+
+  const systemInstruction = `You are Olanga, a simple, chill, and obedient AI voice assistant.
+The user is your boss. Refer to them as "Boss". Keep your answers concise, direct, and conversational.
+Use a relaxed, natural speaking style. Don't sound like a robot. Use conversational fillers naturally, BUT do NOT say "Let me check" or "I'll look that up". Just give the grounded answer immediately.
+You have FULL ACCESS to Google Search via the google_search tool. You MUST use your search tool to provide accurate, real-time answers for weather, news, sports, and current events. IMPORTANT: When reporting weather or temperature, ALWAYS use Fahrenheit unless the user specifically asks for Celsius.${locationContext}${timeContext}
+The user will provide an audio clip of them speaking. Transcribe what they said, and respond to their request.
+If the audio is completely silent, or contains no decipherable speech, you MUST respond exactly with "RESPONSE: [SILENCE]" and do nothing else.
+
+IMPORTANT VISION INSTRUCTIONS:
+If the user asks you to look at something on their screen, or mentions an error, image, or anything visual that you would need to see to answer, AND there is no image attached to the prompt, output EXACTLY the command [REQUEST_SCREENSHOT] and nothing else.
+HOWEVER, if there is ALREADY an image attached to the prompt, you MUST NOT output [REQUEST_SCREENSHOT]. Instead, you must look at the attached image and answer the user's question directly!
+
+IMPORTANT SPOTIFY INSTRUCTIONS:
+You HAVE FULL CAPABILITY to play music, songs, artists, playlists, and albums on Spotify. Whenever the user asks you to play any of these, you MUST comply and output the command [SPOTIFY_TYPE: Search Term] in your RESPONSE. NEVER say you cannot play music or control Spotify, because you can. Do not use quotes inside the command.
+For "TYPE", use SONG, ALBUM, PLAYLIST, or ARTIST.
+Example for a song: "I'll play that for you right now. [SPOTIFY_SONG: Shape of You by Ed Sheeran]"
+Example for an album: "Playing the album right now. [SPOTIFY_ALBUM: The Dark Side of the Moon by Pink Floyd]"
+Example for an artist: "Here is some music by Drake. [SPOTIFY_ARTIST: Drake]"
+Example for a playlist: "Playing your playlist now. [SPOTIFY_PLAYLIST: Liked Songs]"
+
+IMPORTANT MEDIA AND SYSTEM CONTROLS:
+You can control the system's volume and media playback. Whenever the user asks you to pause, play, skip, or change the volume, output the exact corresponding command in your RESPONSE:
+- Pause or Resume playback: [MEDIA_PLAY_PAUSE]
+- Next Track or Skip: [MEDIA_NEXT]
+- Previous Track: [MEDIA_PREV]
+- Volume Up: [VOLUME_UP]
+- Volume Down: [VOLUME_DOWN]
+- Mute or Unmute Volume: [VOLUME_MUTE]
+Example: "I'll turn that down for you. [VOLUME_DOWN]"
+Example: "Skipping to the next song. [MEDIA_NEXT]"
+
+IMPORTANT MIC CONTROLS:
+You can mute your own microphone. When the user asks you to mute your microphone or mute yourself, output the command [MUTE_MIC] in your RESPONSE. (You cannot unmute yourself via voice because you won't be listening, so do not output UNMUTE_MIC unless they specifically ask it in context, but mainly focus on muting).
+Example: "I'll mute myself now. [MUTE_MIC]"
+
+IMPORTANT TIMER CONTROLS:
+You can set, cancel, or stop timers. When the user asks you to set a timer, determine the duration in seconds and the name/label they specified (default to "Timer" if none specified), and output the exact command [SET_TIMER: duration, label] in your RESPONSE. If the user asks to cancel or delete a timer, output [CANCEL_TIMER: label] in your RESPONSE.
+Example: "Setting a timer for 3 minutes named brush. [SET_TIMER: 180, brush]"
+Example: "Timer set for 10 seconds. [SET_TIMER: 10, Timer]"
+Example: "Cancelling your brush timer. [CANCEL_TIMER: brush]"
+
+IMPORTANT TASK / CHECKLIST CONTROLS:
+You can manage the user's checklist/tasks. When the user asks you to add a task, remove a task, clear all tasks, or set due dates, output the exact corresponding command in your RESPONSE:
+- Add a task: [ADD_TASK: text, optional_due_date]
+- Remove/delete a task: [REMOVE_TASK: text_or_id]
+- Clear all tasks: [CLEAR_ALL_TASKS]
+- Set task due date: [SET_TASK_DUE: text_or_id, due_date]
+Example: "Adding buy milk to your checklist. [ADD_TASK: buy milk]"
+Example: "I'll add wash car due tomorrow morning to your tasks. [ADD_TASK: wash car, tomorrow morning]"
+Example: "Removing the buy milk task. [REMOVE_TASK: buy milk]"
+Example: "Setting due date for wash car to tonight. [SET_TASK_DUE: wash car, tonight]"
+Example: "Clearing all tasks for you. [CLEAR_ALL_TASKS]"
+
+IMPORTANT SYSTEM LAUNCH CONTROLS:
+You HAVE FULL CAPABILITY to open or launch applications on the user's computer. Whenever the user asks you to open an app (e.g. Discord, Chrome, Word, etc.), you MUST output the command [OPEN_APP: AppName] in your RESPONSE. NEVER say you cannot open apps.
+Example: "Opening Discord for you now. [OPEN_APP: Discord]"
+Example: "I'll launch Chrome right away. [OPEN_APP: Google Chrome]"
+
+Your response will be spoken aloud, so do NOT use markdown, bullet points, code blocks, or any visual formatting.
+
+Format your response EXACTLY like this:
+USER_SAID: [transcribe exactly what the user said in the audio]
+RESPONSE: [your conversational response]`;
+
+  const requestParts = [];
+  
+  if (base64Audio) {
+    requestParts.push({ inline_data: { mime_type: 'audio/wav', data: base64Audio } });
+  }
+
+  if (base64Image) {
+    const justData = base64Image.split(',')[1];
+    requestParts.push({ inline_data: { mime_type: 'image/png', data: justData } });
+  }
+
+  let textPrompt = `Context: ${buildHistoryContext()}\nPlease process the attached audio.`;
+  if (base64Image && userSaidContext) {
+    textPrompt = `Context: ${buildHistoryContext()}\nThe user previously asked: "${userSaidContext}". Here is the screenshot they just provided for you to look at. Answer their original question.`;
+  }
+  
+  requestParts.push({ text: textPrompt });
+
+  const body = {
+    system_instruction: {
+      parts: [{ text: systemInstruction }]
+    },
+    tools: [
+      { google_search: {} }
+    ],
+    contents: [{
+      parts: requestParts
+    }],
+    generationConfig: {
+      temperature: 0.7,
+      topP: 0.95,
+      topK: 40,
+      maxOutputTokens: 400
+    }
+  };
+
+  let keysTriedThisCall = 0;
+  const maxKeyAttempts = apiKeyRotation ? apiKeys.length : 1;
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    // dynamically get the URL with current apiKey in case it rotated
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${apiKey}`;
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+
+    if (response.status === 429) {
+      if (apiKeyRotation && keysTriedThisCall < maxKeyAttempts - 1) {
+        // Rotate key and try immediately
+        currentKeyIndex = (currentKeyIndex + 1) % apiKeys.length;
+        apiKey = apiKeys[currentKeyIndex];
+        keysTriedThisCall++;
+        console.log(`[Olanga] Rate limited! Rotating to Key ${currentKeyIndex + 1}...`);
+        continue;
+      }
+      const waitTime = (attempt + 1) * 15;
+      console.log(`[Olanga] Rate limited. Waiting ${waitTime}s...`);
+      await new Promise(r => setTimeout(r, waitTime * 1000));
+      keysTriedThisCall = 0; // reset for next attempt round
+      continue;
+    }
+
+    if (!response.ok) {
+      const errText = await response.text();
+      let errMsg;
+      try {
+        const errData = JSON.parse(errText);
+        errMsg = `Google API Error ${errData?.error?.code}: ${errData?.error?.message}`;
+      } catch {
+        errMsg = `HTTP ${response.status}: ${errText.substring(0, 200)}`;
+      }
+      throw new Error(errMsg);
+    }
+
+    const data = await response.json();
+    if (data.candidates && data.candidates[0]?.content?.parts?.[0]?.text) {
+      return data.candidates[0].content.parts[0].text.trim();
+    }
+    throw new Error('No response from Gemini');
+  }
+  
+  throw new Error('Rate limited across all keys. Please try again later.');
+}
+
+function buildHistoryContext() {
+  if (conversationHistory.length === 0) return '';
+  const recent = conversationHistory.slice(-6);
+  const lines = recent.map(m => `${m.role === 'user' ? 'User' : 'Olanga'}: ${m.text}`);
+  return `Recent conversation:\n${lines.join('\n')}`;
+}
+
+function parseResponse(raw) {
+  let userSaid = '';
+  let response = raw;
+
+  const userMatch = raw.match(/USER_SAID:\s*(.+?)(?:\n|RESPONSE:)/is);
+  const responseMatch = raw.match(/RESPONSE:\s*(.+)/is);
+
+  if (userMatch) {
+    userSaid = userMatch[1].trim();
+  }
+
+  if (responseMatch) {
+    response = responseMatch[1].trim();
+  } else if (userMatch) {
+    response = raw.substring(raw.indexOf(userMatch[0]) + userMatch[0].length).trim();
+  }
+
+  return { userSaid, response };
+}
+
+// ============================================
+// TEXT-TO-SPEECH
+// ============================================
+
+async function speakResponse(text) {
+  setState(State.SPEAKING);
+  synthesis.cancel();
+
+  if (!nvidiaApiKey) {
+    console.warn('[Olanga] No NVIDIA API Key set, falling back to browser TTS.');
+    fallbackTTS(text);
+    return;
+  }
+
+  try {
+    console.log('[Olanga] 🔊 Using NVIDIA Magpie TTS...');
+    const response = await fetch('https://integrate.api.nvidia.com/v1/audio/speech', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${nvidiaApiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'magpie-tts-zeroshot',
+        input: text
+      })
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      throw new Error(`NVIDIA API Error: ${err}`);
+    }
+
+    const audioBlob = await response.blob();
+    const audioUrl = URL.createObjectURL(audioBlob);
+    const audio = new Audio(audioUrl);
+    audio.volume = isMuted ? 0 : currentVolume;
+    currentTTSAudio = audio;
+    
+    audio.addEventListener('ended', () => {
+      console.log('[Olanga] Done speaking (NVIDIA TTS)');
+      URL.revokeObjectURL(audioUrl);
+      currentTTSAudio = null;
+      setState(State.IDLE);
+    });
+
+    audio.addEventListener('error', (e) => {
+      console.error('[Olanga] NVIDIA TTS playback error:', e);
+      URL.revokeObjectURL(audioUrl);
+      currentTTSAudio = null;
+      setState(State.IDLE);
+    });
+
+    audio.play();
+  } catch (e) {
+    console.warn('[Olanga] NVIDIA TTS failed, falling back to browser TTS:', e.message);
+    fallbackTTS(text);
+  }
+}
+
+function fallbackTTS(text) {
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.rate = 1.05;
+  utterance.pitch = 1.0;
+  utterance.volume = isMuted ? 0 : currentVolume;
+
+  const voices = synthesis.getVoices();
+  const preferredVoice = voices[0];
+  if (preferredVoice) utterance.voice = preferredVoice;
+
+  utterance.onend = () => {
+    console.log('[Olanga] Done speaking (fallback TTS)');
+    setState(State.IDLE);
+  };
+
+  utterance.onerror = (e) => {
+    console.error('[Olanga] Fallback TTS error:', e);
+    setState(State.IDLE);
+  };
+
+  synthesis.speak(utterance);
+}
+
+function enterFollowUpMode() {
+  setState(State.LISTENING);
+  hint.innerHTML = 'Ask a follow-up or say <strong>"Hey Olanga"</strong> anytime';
+  hint.classList.remove('hidden');
+  startRecording();
+
+  if (followUpTimer) clearTimeout(followUpTimer);
+
+  followUpTimer = setTimeout(() => {
+    if (currentState === State.LISTENING) {
+      console.log('[Olanga] Follow-up window expired');
+      cancelRecording();
+      setState(State.IDLE);
+      followUpTimer = null;
+    }
+  }, FOLLOW_UP_WINDOW);
+}
+
+// Ensure voices are loaded
+if (synthesis.onvoiceschanged !== undefined) {
+  synthesis.onvoiceschanged = () => {
+    console.log('[Olanga] Voices loaded:', synthesis.getVoices().length);
+  };
+}
+
+// ============================================
+// ORB CANVAS ANIMATION
+// ============================================
+
+function startOrbAnimation() {
+  const canvas = orbCanvas;
+  const ctx = orbCanvasCtx;
+  if (!ctx) return;
+
+  let time = 0;
+
+  function draw() {
+    time += 0.02;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const cx = canvas.width / 2;
+    const cy = canvas.height / 2;
+    const radius = 80;
+
+    for (let i = 0; i < 12; i++) {
+      const angle = (i / 12) * Math.PI * 2 + time;
+      const dist = radius * 0.5 + Math.sin(time * 2 + i) * 20;
+      const x = cx + Math.cos(angle) * dist * 0.6;
+      const y = cy + Math.sin(angle) * dist * 0.6;
+      const size = 2 + Math.sin(time + i * 0.5) * 1.5;
+
+      ctx.beginPath();
+      ctx.arc(x, y, size, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(255, 255, 255, ${0.1 + Math.sin(time + i) * 0.08})`;
+      ctx.fill();
+    }
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius * 0.7, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(255, 255, 255, ${0.03 + Math.sin(time * 1.5) * 0.02})`;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    animationFrameId = requestAnimationFrame(draw);
+  }
+
+  draw();
+}
+
+// ============================================
+// CLOCK LOGIC
+// ============================================
+function updateClock() {
+  if (!clockDisplay) return;
+  const now = new Date();
+  let hours = now.getHours();
+  let minutes = now.getMinutes();
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12;
+  hours = hours ? hours : 12; // the hour '0' should be '12'
+  minutes = minutes < 10 ? '0' + minutes : minutes;
+  clockDisplay.textContent = `${hours}:${minutes} ${ampm}`;
+
+  // Update date
+  if (dateDisplay) {
+    const options = { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' };
+    dateDisplay.textContent = now.toLocaleDateString('en-US', options);
+  }
+}
+
+// ============================================
+// ERROR TOAST
+// ============================================
+
+function showError(message) {
+  const existing = document.querySelector('.error-toast');
+  if (existing) existing.remove();
+
+  const toast = document.createElement('div');
+  toast.className = 'error-toast';
+  toast.textContent = message;
+  document.body.appendChild(toast);
+
+  requestAnimationFrame(() => toast.classList.add('show'));
+
+  setTimeout(() => {
+    toast.classList.remove('show');
+    setTimeout(() => toast.remove(), 400);
+  }, 5000);
+}
+
+// ============================================
+// CLEANUP
+// ============================================
+
+window.addEventListener('beforeunload', () => {
+  if (micStream) micStream.getTracks().forEach(t => t.stop());
+  if (audioContext) audioContext.close();
+  synthesis.cancel();
+  if (animationFrameId) cancelAnimationFrame(animationFrameId);
+  if (voskModel) voskModel.terminate();
+});
+
+// ---- Boot ----
+document.addEventListener('DOMContentLoaded', init);
+
+// ============================================
+// AUDIO CONTROLS (Mute, Silence, Volume)
+// ============================================
+
+function initAudioControls() {
+  const savedMicMute = localStorage.getItem('olanga_mic_muted');
+  if (savedMicMute === 'true') {
+    muteMic();
+  } else {
+    unmuteMic();
+  }
+
+  if (micToggleBtn) {
+    micToggleBtn.addEventListener('click', toggleMic);
+  }
+}
+
+function muteMic() {
+  isMicMuted = true;
+  if (micToggleBtn) {
+    micToggleBtn.classList.add('muted');
+    micToggleBtn.title = "Unmute Microphone";
+  }
+  if (micIconOn && micIconOff) {
+    micIconOn.style.display = 'none';
+    micIconOff.style.display = 'block';
+  }
+  localStorage.setItem('olanga_mic_muted', 'true');
+  console.log('[Olanga] Microphone muted');
+  
+  if (currentState === State.LISTENING) {
+    cancelRecording();
+    setState(State.IDLE);
+  }
+}
+
+function unmuteMic() {
+  isMicMuted = false;
+  if (micToggleBtn) {
+    micToggleBtn.classList.remove('muted');
+    micToggleBtn.title = "Mute Microphone";
+  }
+  if (micIconOn && micIconOff) {
+    micIconOn.style.display = 'block';
+    micIconOff.style.display = 'none';
+  }
+  localStorage.setItem('olanga_mic_muted', 'false');
+  console.log('[Olanga] Microphone unmuted');
+}
+
+function toggleMic() {
+  if (isMicMuted) {
+    unmuteMic();
+  } else {
+    muteMic();
+  }
+}
+
+// ============================================
+// TIMER MANAGEMENT SUBSYSTEM
+// ============================================
+
+function createTimer(durationSeconds, label = 'Timer') {
+  const id = Date.now() + Math.random().toString(36).substr(2, 9);
+  const durationMs = durationSeconds * 1000;
+  const endTime = Date.now() + durationMs;
+  
+  const timerObj = {
+    id,
+    endTime,
+    label: label || 'Timer',
+    intervalId: null,
+    ringing: false
+  };
+  
+  activeTimers.push(timerObj);
+  
+  // Render the new timer immediately
+  renderTimers();
+  
+  // Start the countdown interval
+  timerObj.intervalId = setInterval(() => {
+    const remainingMs = timerObj.endTime - Date.now();
+    if (remainingMs <= 0) {
+      clearInterval(timerObj.intervalId);
+      timerObj.intervalId = null;
+      ringTimer(timerObj);
+    } else {
+      updateTimerDisplay(timerObj);
+    }
+  }, 1000);
+}
+
+function ringTimer(timerObj) {
+  timerObj.ringing = true;
+  playAlarmSoundLoop();
+  
+  const card = document.getElementById(`timer-card-${timerObj.id}`);
+  if (card) {
+    card.classList.add('ringing');
+    const timeEl = card.querySelector('.timer-time');
+    if (timeEl) timeEl.textContent = '00:00';
+  }
+}
+
+function cancelTimer(id) {
+  const timerIndex = activeTimers.findIndex(t => t.id === id);
+  if (timerIndex !== -1) {
+    const timer = activeTimers[timerIndex];
+    if (timer.intervalId) {
+      clearInterval(timer.intervalId);
+    }
+    activeTimers.splice(timerIndex, 1);
+    
+    // Check if we can stop the alarm sound loop
+    const stillRinging = activeTimers.some(t => t.ringing);
+    if (!stillRinging && alarmIntervalId) {
+      clearInterval(alarmIntervalId);
+      alarmIntervalId = null;
+    }
+    
+    renderTimers();
+  }
+}
+
+function cancelTimerByLabel(label) {
+  const lowercaseLabel = label.toLowerCase().trim();
+  const matched = activeTimers.filter(t => t.label.toLowerCase().trim() === lowercaseLabel);
+  if (matched.length > 0) {
+    matched.forEach(t => cancelTimer(t.id));
+  }
+}
+
+function clearAllTimers() {
+  activeTimers.forEach(t => {
+    if (t.intervalId) clearInterval(t.intervalId);
+  });
+  activeTimers = [];
+  if (alarmIntervalId) {
+    clearInterval(alarmIntervalId);
+    alarmIntervalId = null;
+  }
+  renderTimers();
+}
+
+function renderTimers() {
+  if (!timersContainer) return;
+  timersContainer.innerHTML = '';
+  
+  if (activeTimers.length === 0) {
+    const emptyEl = document.createElement('div');
+    emptyEl.className = 'timers-empty';
+    emptyEl.textContent = 'No active timers';
+    timersContainer.appendChild(emptyEl);
+    return;
+  }
+  
+  activeTimers.forEach(timer => {
+    const card = document.createElement('div');
+    card.className = `timer-card ${timer.ringing ? 'ringing' : ''}`;
+    card.id = `timer-card-${timer.id}`;
+    
+    const remainingMs = timer.endTime - Date.now();
+    const formatted = formatTime(remainingMs > 0 ? remainingMs : 0);
+    
+    card.innerHTML = `
+      <div class="timer-info">
+        <span class="timer-label">${escapeHTML(timer.label)}</span>
+        <span class="timer-time">${formatted}</span>
+      </div>
+      <button class="timer-btn-close" title="Dismiss Timer">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
+    `;
+    
+    const closeBtn = card.querySelector('.timer-btn-close');
+    closeBtn.addEventListener('click', () => {
+      cancelTimer(timer.id);
+    });
+    
+    timersContainer.appendChild(card);
+  });
+}
+
+function updateTimerDisplay(timerObj) {
+  const card = document.getElementById(`timer-card-${timerObj.id}`);
+  if (!card) return;
+  
+  const timeEl = card.querySelector('.timer-time');
+  if (!timeEl) return;
+  
+  const remainingMs = timerObj.endTime - Date.now();
+  timeEl.textContent = formatTime(remainingMs > 0 ? remainingMs : 0);
+}
+
+function formatTime(ms) {
+  const totalSecs = Math.ceil(ms / 1000);
+  const hrs = Math.floor(totalSecs / 3600);
+  const mins = Math.floor((totalSecs % 3600) / 60);
+  const secs = totalSecs % 60;
+  
+  let result = '';
+  if (hrs > 0) {
+    result += (hrs < 10 ? '0' + hrs : hrs) + ':';
+  }
+  result += (mins < 10 ? '0' + mins : mins) + ':';
+  result += (secs < 10 ? '0' + secs : secs);
+  return result;
+}
+
+function parseTimerInput(input) {
+  const cleaned = input.toLowerCase().trim();
+  
+  // Try matching patterns like "1h30m", "3m", "10s", "1h", "2m30s"
+  const hMatch = cleaned.match(/(\d+)\s*h/);
+  const mMatch = cleaned.match(/(\d+)\s*m/);
+  const sMatch = cleaned.match(/(\d+)\s*s/);
+  
+  if (hMatch || mMatch || sMatch) {
+    const hours = hMatch ? parseInt(hMatch[1]) : 0;
+    const minutes = mMatch ? parseInt(mMatch[1]) : 0;
+    const seconds = sMatch ? parseInt(sMatch[1]) : 0;
+    return hours * 3600 + minutes * 60 + seconds;
+  }
+  
+  // Plain number = seconds
+  const num = parseInt(cleaned);
+  if (!isNaN(num) && num > 0) {
+    return num;
+  }
+  
+  return 0;
+}
+
+function escapeHTML(str) {
+  return str.replace(/[&<>'"]/g, 
+    tag => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      "'": '&#39;',
+      '"': '&quot;'
+    }[tag] || tag)
+  );
+}
+
+function playAlarmSound() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state === 'suspended') {
+      ctx.resume();
+    }
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    
+    gain.gain.setValueAtTime(0.5, ctx.currentTime);
+    const now = ctx.currentTime;
+    
+    gain.gain.setValueAtTime(0.5, now);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
+    
+    gain.gain.setValueAtTime(0.5, now + 0.3);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.45);
+
+    gain.gain.setValueAtTime(0.5, now + 0.6);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.75);
+    
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    
+    osc.start(now);
+    osc.stop(now + 1.0);
+  } catch (err) {
+    console.error('Failed to play alarm sound:', err);
+  }
+}
+
+function playAlarmSoundLoop() {
+  if (alarmIntervalId) return;
+  
+  playAlarmSound();
+  
+  alarmIntervalId = setInterval(() => {
+    const stillRinging = activeTimers.some(t => t.ringing);
+    if (stillRinging) {
+      playAlarmSound();
+    } else {
+      clearInterval(alarmIntervalId);
+      alarmIntervalId = null;
+    }
+  }, 2000);
+}
+
+// ============================================
+// TASK / CHECKLIST MANAGEMENT SUBSYSTEM
+// ============================================
+
+function saveTasks() {
+  localStorage.setItem('olanga_tasks', JSON.stringify(activeTasks));
+}
+
+function loadTasks() {
+  const stored = localStorage.getItem('olanga_tasks');
+  if (stored) {
+    try {
+      activeTasks = JSON.parse(stored);
+    } catch (e) {
+      console.error('Failed to parse tasks', e);
+      activeTasks = [];
+    }
+  }
+}
+
+function addTask(text, dueDate = null) {
+  if (!text.trim()) return;
+  const id = Date.now() + Math.random().toString(36).substr(2, 9);
+  
+  activeTasks.push({
+    id,
+    text: text.trim(),
+    completed: false,
+    dueDate: dueDate ? dueDate.trim() : null
+  });
+  
+  saveTasks();
+  renderTasks();
+}
+
+function removeTask(idOrText) {
+  const lowercaseVal = idOrText.toLowerCase().trim();
+  
+  let index = activeTasks.findIndex(t => t.id === idOrText);
+  if (index === -1) {
+    index = activeTasks.findIndex(t => t.text.toLowerCase().includes(lowercaseVal));
+  }
+  
+  if (index !== -1) {
+    activeTasks.splice(index, 1);
+    saveTasks();
+    renderTasks();
+  }
+}
+
+function clearAllTasks() {
+  activeTasks = [];
+  saveTasks();
+  renderTasks();
+}
+
+function setTaskDue(idOrText, dueDate) {
+  const lowercaseVal = idOrText.toLowerCase().trim();
+  
+  let task = activeTasks.find(t => t.id === idOrText);
+  if (!task) {
+    task = activeTasks.find(t => t.text.toLowerCase().includes(lowercaseVal));
+  }
+  
+  if (task) {
+    task.dueDate = dueDate ? dueDate.trim() : null;
+    saveTasks();
+    renderTasks();
+  }
+}
+
+function toggleTaskComplete(id) {
+  const task = activeTasks.find(t => t.id === id);
+  if (task) {
+    task.completed = !task.completed;
+    saveTasks();
+    renderTasks();
+  }
+}
+
+function renderTasks() {
+  const listContainer = document.getElementById('tasksList');
+  if (!listContainer) return;
+  listContainer.innerHTML = '';
+  
+  if (activeTasks.length === 0) {
+    const emptyEl = document.createElement('div');
+    emptyEl.className = 'tasks-empty';
+    emptyEl.textContent = 'Checklist is empty';
+    listContainer.appendChild(emptyEl);
+    return;
+  }
+  
+  activeTasks.forEach(task => {
+    const item = document.createElement('div');
+    item.className = 'task-item';
+    item.id = `task-item-${task.id}`;
+    
+    item.innerHTML = `
+      <input type="checkbox" class="task-checkbox" ${task.completed ? 'checked' : ''} />
+      <div class="task-content">
+        <span class="task-text ${task.completed ? 'completed' : ''}">${escapeHTML(task.text)}</span>
+        ${task.dueDate ? `<span class="task-due">📅 ${escapeHTML(task.dueDate)}</span>` : ''}
+      </div>
+      <button class="task-delete-btn" title="Delete Task">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="3 6 5 6 21 6"></polyline>
+          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+        </svg>
+      </button>
+    `;
+    
+    const cb = item.querySelector('.task-checkbox');
+    cb.addEventListener('change', () => {
+      toggleTaskComplete(task.id);
+    });
+    
+    const delBtn = item.querySelector('.task-delete-btn');
+    delBtn.addEventListener('click', () => {
+      const idx = activeTasks.findIndex(t => t.id === task.id);
+      if (idx !== -1) {
+        activeTasks.splice(idx, 1);
+        saveTasks();
+        renderTasks();
+      }
+    });
+    
+    listContainer.appendChild(item);
+  });
+}
+

@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Olanga</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- Custom title bar for frameless window -->
+  <div class="titlebar" id="titlebar">
+    <div class="titlebar-drag"></div>
+    <div class="titlebar-controls">
+      <button class="titlebar-btn minimize-btn" id="minimizeBtn" title="Minimize">
+        <svg width="12" height="12" viewBox="0 0 12 12"><rect y="5" width="12" height="2" rx="1" fill="currentColor"/></svg>
+      </button>
+      <button class="titlebar-btn close-btn" id="closeBtn" title="Close">
+        <svg width="12" height="12" viewBox="0 0 12 12"><path d="M1 1L11 11M11 1L1 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- API Key Setup Screen -->
+  <div class="screen" id="setupScreen">
+    <div class="setup-container">
+
+      <h1 class="setup-title">Olanga</h1>
+      <p class="setup-subtitle">Your AI Voice Assistant</p>
+      <div class="setup-form">
+        <label class="setup-label" for="apiKeyInput">Gemini API Key</label>
+        <input type="password" id="apiKeyInput" class="setup-input" placeholder="Enter your Gemini key..." autocomplete="off">
+        <p class="setup-hint">Get a free key at <span class="setup-link" id="getKeyLink">aistudio.google.com</span></p>
+        <label class="setup-label" for="nvidiaKeyInput" style="margin-top:10px;">NVIDIA API Key (for TTS)</label>
+        <input type="password" id="nvidiaKeyInput" class="setup-input" placeholder="Enter your NVIDIA key..." autocomplete="off">
+        <button class="setup-btn" id="saveKeyBtn">Activate Olanga</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Assistant Screen -->
+  <div class="screen hidden" id="mainScreen">
+    <div class="assistant-container">
+      <!-- Top Bar -->
+      <div class="top-bar">
+        <div class="clock-date-wrapper">
+          <div class="clock-display" id="clockDisplay">
+            --:--
+          </div>
+          <div class="date-display" id="dateDisplay">Loading...</div>
+        </div>
+        <button class="icon-btn" id="settingsBtn" title="Settings">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        </button>
+      </div>
+
+      <!-- Central Orb -->
+      <div class="orb-container" id="orbContainer">
+        <div class="orb-glow" id="orbGlow"></div>
+        <div class="orb-rings" id="orbRings">
+          <div class="ring ring-1"></div>
+          <div class="ring ring-2"></div>
+          <div class="ring ring-3"></div>
+        </div>
+        <div class="orb" id="orb">
+          <div class="orb-inner"></div>
+          <canvas id="orbCanvas" width="200" height="200"></canvas>
+        </div>
+        <!-- Sound wave bars -->
+        <div class="wave-bars" id="waveBars">
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+        </div>
+      </div>
+
+      <!-- Name -->
+      <h1 class="assistant-name">Olanga</h1>
+
+      <!-- Transcript area -->
+      <div class="transcript-area" id="transcriptArea">
+        <div class="transcript-user hidden" id="transcriptUser">
+          <span class="transcript-label">You</span>
+          <p class="transcript-text" id="userText"></p>
+        </div>
+        <div class="transcript-ai hidden" id="transcriptAi">
+          <span class="transcript-label">Olanga</span>
+          <p class="transcript-text" id="aiText"></p>
+        </div>
+      </div>
+
+      <!-- Hint -->
+      <div class="hint" id="hint">
+        Say <strong>"Hey Olanga"</strong> to start
+      </div>
+
+      <!-- Mic Toggle -->
+      <button class="mic-toggle-btn" id="micToggleBtn" title="Mute / Unmute Microphone">
+        <svg class="mic-icon" id="micIconOn" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+          <line x1="12" y1="19" x2="12" y2="23"></line>
+          <line x1="8" y1="23" x2="16" y2="23"></line>
+        </svg>
+        <svg class="mic-icon mic-off-icon" id="micIconOff" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none;">
+          <line x1="1" y1="1" x2="23" y2="23"></line>
+          <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"></path>
+          <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17"></path>
+          <line x1="12" y1="19" x2="12" y2="23"></line>
+          <line x1="8" y1="23" x2="16" y2="23"></line>
+        </svg>
+      </button>
+
+      <!-- Timers container (bottom-left) -->
+      <div class="timers-card-wrapper" id="timersWidget">
+        <div class="timers-header">
+          <span class="timers-title">Timers</span>
+          <button class="timers-clear-btn" id="timersClearBtn" title="Clear All Timers">Clear All</button>
+        </div>
+        <div class="timers-list" id="timersList"></div>
+        <div class="timers-input-wrapper">
+          <input type="text" id="timerInput" placeholder="Set timer (e.g. 3m, 10s)..." />
+          <button id="addTimerBtn" title="Add Timer">+</button>
+        </div>
+      </div>
+
+      <!-- Tasks container (bottom-right) -->
+      <div class="tasks-container" id="tasksContainer">
+        <div class="tasks-header">
+          <span class="tasks-title">Tasks</span>
+          <button class="tasks-clear-btn" id="tasksClearBtn" title="Clear All Tasks">Clear All</button>
+        </div>
+        <div class="tasks-list" id="tasksList"></div>
+        <div class="tasks-input-wrapper">
+          <input type="text" id="taskInput" placeholder="Add a task..." />
+          <button id="addTaskBtn" title="Add Task">+</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Modal -->
+  <div class="modal hidden" id="settingsModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Settings</h2>
+        <button class="icon-btn" id="closeSettingsBtn" title="Close">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="settings-section">
+          <h3>API Keys</h3>
+          <div class="key-list-container" id="keyListContainer">
+            <!-- Keys rendered here -->
+          </div>
+          <div class="add-key-row">
+            <input type="password" id="newKeyInput" placeholder="Add new Gemini key...">
+            <button id="addKeyBtn">Add</button>
+          </div>
+          <div class="add-key-row" style="margin-top:10px;">
+            <input type="password" id="nvidiaSettingsKeyInput" placeholder="Set NVIDIA API Key...">
+            <button id="addNvidiaKeyBtn">Save</button>
+          </div>
+          <div class="rotation-toggle-row">
+            <label class="toggle-switch">
+              <input type="checkbox" id="rotationToggle">
+              <span class="slider"></span>
+            </label>
+            <span>Enable Key Rotation (auto-switch on Rate Limit)</span>
+          </div>
+        </div>
+
+        <div class="settings-section" style="margin-top: 24px; border-top: 1px solid var(--border-subtle); padding-top: 16px;">
+          <h3>Location Context</h3>
+          <p class="settings-hint">Used for accurate weather and local searches.</p>
+          <div class="location-inputs">
+            <input type="text" id="cityInput" placeholder="City (e.g. Seattle)">
+            <input type="text" id="stateInput" placeholder="State/Region (e.g. WA)">
+            <input type="text" id="countryInput" placeholder="Country (e.g. USA)">
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="./node_modules/vosk-browser/dist/vosk.js"></script>
+  <script src="./renderer.js"></script>
+</body>
+</html>
