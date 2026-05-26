@@ -28,34 +28,34 @@ Assuming you have cloned this repository from GitHub:
 On your first launch, Olanga will ask for your API keys. You can access these anytime by clicking the **Settings (gear)** icon in the top right.
 
 1. **Gemini API Key**: Required for the core intelligence and vision model. Get one for free at [aistudio.google.com](https://aistudio.google.com/apikey).
-2. **NVIDIA API Key**: Required for the Magpie TTS (Text-to-Speech) voice. Get one at [build.nvidia.com](https://build.nvidia.com/). If you do not provide an NVIDIA key, Olanga will automatically fallback to your browser's default robotic voice.
+2. **NVIDIA API Key**: Required for the Magpie TTS (Text-to-Speech) voice. Get one at [build.nvidia.com](https://build.nvidia.com/). If you do not provide an NVIDIA key, Olanga will automatically fallback to your browser's default voice.
 3. **Location Context**: Add your City/State in the settings so Olanga can provide accurate real-time weather and local searches.
 
 ## Voice Commands & Capabilities
 
-To start an interaction, simply say: **"Hey Olanga"** (or similar variations like "Hail Olanga") and wait for the UI to turn green and pulse.
+To start an interaction, simply say: **"Hey"** (or similar variations like "Hey Olanga") and wait for the UI to turn green and pulse.
 
-### 🧠 General Intelligence & Search
+### General Intelligence & Search
 - Ask anything: *"What's the capital of France?"*
 - Real-time info: *"What's the weather like today?"*, *"Who won the game last night?"*
 
-### 📸 Multimodal Vision
+### Multimodal Vision
 - *"Look at my screen, why am I getting this code error?"*
 - *"Can you read this paragraph for me?"*
 *(Olanga will trigger your snipping tool. Select the area, and Olanga will process the image along with your original question!)*
 
-### 🎵 Spotify Control
+### Spotify Control
 *(Note: Olanga simulates keystrokes to control the actual Spotify Desktop App. Make sure Spotify is open.)*
 - **Songs**: *"Play Shape of You by Ed Sheeran on Spotify"*
 - **Artists**: *"Play Drake on Spotify"*
-- **Playlists**: *"Play my Liked Songs playlist"*
+- **Playlists**: *"Play my Liked Songs"*
 
-### 🎛️ Media & Volume Controls
+### Media & Volume Controls
 - **Playback**: *"Pause the music"*, *"Resume playback"*
 - **Tracks**: *"Skip to the next song"*, *"Go back to the previous track"*
 - **Volume**: *"Turn the volume up"*, *"Turn it down"*, *"Mute the audio"*
 
-### 🖥️ App Launching
+### App Launching
 *(Olanga integrates directly with Windows Search to launch applications.)*
 - *"Open Discord"*
 - *"Launch Google Chrome"*
