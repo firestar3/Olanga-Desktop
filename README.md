@@ -65,3 +65,7 @@ To start an interaction, simply say: **"Hey"** (or similar variations like "Hey 
 
 - **App won't start after closing it?** Olanga is designed to stay alive in your system tray (bottom right corner of Windows). If you try to open a second instance while it's hidden, it will just bring the hidden window back into focus. To completely close Olanga, right-click the orb in your system tray and click "Quit".
 - **Audio isn't playing / Vision isn't working?** Check the Developer Console (`Ctrl+Shift+I` while Olanga is focused) for specific rate-limit or API key errors.
+
+## Application Photo
+
+<img width="1919" height="1079" alt="image" src="https://github.com/user-attachments/assets/3d6ad370-56c9-42c5-98da-642a43835685" />
