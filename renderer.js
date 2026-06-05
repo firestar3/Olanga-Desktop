@@ -42,6 +42,7 @@ let currentTTSAudio = null; // Reference to current TTS audio element
 let isMuted = false;
 let currentVolume = 0.8; // 0-1 range
 let isMicMuted = false;
+let isTtsMuted = false;
 let activeTimers = [];
 let alarmIntervalId = null;
 let activeTasks = [];
@@ -99,6 +100,9 @@ const dateDisplay = document.getElementById('dateDisplay');
 const micToggleBtn = document.getElementById('micToggleBtn');
 const micIconOn = document.getElementById('micIconOn');
 const micIconOff = document.getElementById('micIconOff');
+const ttsToggleBtn = document.getElementById('ttsToggleBtn');
+const ttsIconOn = document.getElementById('ttsIconOn');
+const ttsIconOff = document.getElementById('ttsIconOff');
 const timersContainer = document.getElementById('timersList');
 
 // ---- Initialize ----
@@ -254,6 +258,28 @@ function init() {
     });
   }
 
+  // Text Command bindings
+  const textCommandInput = document.getElementById('textCommandInput');
+  const textCommandBtn = document.getElementById('textCommandBtn');
+
+  const handleTextCommand = () => {
+    const text = textCommandInput.value.trim();
+    if (text) {
+      processTextCommandWithGemini(text);
+      textCommandInput.value = '';
+    }
+  };
+
+  if (textCommandBtn) {
+    textCommandBtn.addEventListener('click', handleTextCommand);
+  }
+
+  if (textCommandInput) {
+    textCommandInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') handleTextCommand();
+    });
+  }
+
   // Render initial timers (shows empty state)
   renderTimers();
 
@@ -357,7 +383,7 @@ async function showMainScreen() {
 let lastIdleTime = 0;
 
 // ---- State Management ----
-function setState(newState) {
+function setState(newState, preserveHistory = false) {
   const prev = currentState;
   currentState = newState;
 
@@ -367,13 +393,16 @@ function setState(newState) {
   switch (newState) {
     case State.IDLE:
       lastIdleTime = Date.now();
-      conversationHistory = []; // Only contain memory for the current strand of conversation
+      if (!preserveHistory) {
+        conversationHistory = []; // Only contain memory for the current strand of conversation
+      }
       hint.textContent = 'Listening for "Hey Olanga"...';
       hint.classList.remove('hidden');
       hint.innerHTML = 'Say <strong>"Hey Olanga"</strong> to start';
       // Reset Vosk recognizer to clear old state
-      conversationHistory = [];
-      // hint.textContent = 'Say "Hey Olanga" to start'; 
+      if (!preserveHistory) {
+        conversationHistory = [];
+      }
       if (voskRecognizer) {
           try {
               voskRecognizer.reset();
@@ -702,8 +731,15 @@ async function processAudioBlobWithGemini(blob) {
 
     const response = await sendAudioToGemini(base64Audio);
     
+    // DEBUG: Log raw response from Gemini
+    console.log('[Olanga DEBUG] Raw Gemini response:', JSON.stringify(response));
+    
     // Parse the structured response
     let parsed = parseResponse(response);
+    
+    // DEBUG: Log parsed response
+    console.log('[Olanga DEBUG] Parsed response:', JSON.stringify(parsed.response));
+    console.log('[Olanga DEBUG] Contains [FOLLOW_UP]?', /\[FOLLOW[_ ]?UP\]/i.test(parsed.response));
     
     // If the model heard nothing, just go to sleep
     if (parsed.response.trim() === '[SILENCE]') {
@@ -757,16 +793,15 @@ async function processAudioBlobWithGemini(blob) {
     spokenResponse = spokenResponse.replace(mediaRegex, '').trim();
 
     // Intercept Mic Mute/Unmute command
-    const micMuteRegex = /\[(MUTE_MIC|UNMUTE_MIC)\]/ig;
+    const micMuteRegex = /\[(MUTE_MIC|UNMUTE_MIC|MUTE_TTS|UNMUTE_TTS)\]/ig;
     let micMuteMatch;
     while ((micMuteMatch = micMuteRegex.exec(spokenResponse)) !== null) {
       const command = micMuteMatch[1].toUpperCase();
-      console.log(`[Olanga] 🎙️ Mic control requested: ${command}`);
-      if (command === 'MUTE_MIC') {
-        muteMic();
-      } else if (command === 'UNMUTE_MIC') {
-        unmuteMic();
-      }
+      console.log(`[Olanga] 🎙️ Audio control requested: ${command}`);
+      if (command === 'MUTE_MIC') muteMic();
+      else if (command === 'UNMUTE_MIC') unmuteMic();
+      else if (command === 'MUTE_TTS') muteTts();
+      else if (command === 'UNMUTE_TTS') unmuteTts();
     }
     spokenResponse = spokenResponse.replace(micMuteRegex, '').trim();
 
@@ -822,6 +857,28 @@ async function processAudioBlobWithGemini(blob) {
       spokenResponse = spokenResponse.replace(setTaskDueMatch[0], '').trim();
     }
 
+    const completeTaskMatch = spokenResponse.match(/\[COMPLETE_TASK:\s*([^\]]+)\]/i);
+    if (completeTaskMatch) {
+      const target = completeTaskMatch[1].trim();
+      console.log(`[Olanga] 📋 Task complete requested for: "${target}"`);
+      completeTask(target, true);
+      spokenResponse = spokenResponse.replace(completeTaskMatch[0], '').trim();
+    }
+
+    const uncompleteTaskMatch = spokenResponse.match(/\[UNCOMPLETE_TASK:\s*([^\]]+)\]/i);
+    if (uncompleteTaskMatch) {
+      const target = uncompleteTaskMatch[1].trim();
+      console.log(`[Olanga] 📋 Task uncomplete requested for: "${target}"`);
+      completeTask(target, false);
+      spokenResponse = spokenResponse.replace(uncompleteTaskMatch[0], '').trim();
+    }
+
+    // Intercept Follow-Up request (catch variants: [FOLLOW_UP], [follow_up], [Follow Up], [followup])
+    const followUpRegex = /\[FOLLOW[_ ]?UP\]/gi;
+    const wantsFollowUp = followUpRegex.test(spokenResponse) || spokenResponse.trim().endsWith('?');
+    console.log('[Olanga DEBUG] wantsFollowUp =', wantsFollowUp, '| spokenResponse before strip:', JSON.stringify(spokenResponse));
+    spokenResponse = spokenResponse.replace(/\[FOLLOW[_ ]?UP\]/gi, '').trim();
+
     // Intercept Screenshot request
     if (spokenResponse.includes('[REQUEST_SCREENSHOT]')) {
       console.log(`[Olanga] 📸 Screenshot requested by AI`);
@@ -847,8 +904,13 @@ async function processAudioBlobWithGemini(blob) {
 
     aiText.textContent = spokenResponse;
     transcriptAi.classList.remove('hidden');
-    
-    speakResponse(spokenResponse);
+
+    if (wantsFollowUp) {
+      console.log('[Olanga] 🔁 AI requested a follow-up from the user');
+      await speakResponseAndThen(spokenResponse, () => enterAiFollowUpMode());
+    } else {
+      speakResponse(spokenResponse);
+    }
 
   } catch (error) {
     console.error('[Olanga] ❌ Processing error:', error);
@@ -914,9 +976,15 @@ You can control the system's volume and media playback. Whenever the user asks y
 Example: "I'll turn that down for you. [VOLUME_DOWN]"
 Example: "Skipping to the next song. [MEDIA_NEXT]"
 
-IMPORTANT MIC CONTROLS:
-You can mute your own microphone. When the user asks you to mute your microphone or mute yourself, output the command [MUTE_MIC] in your RESPONSE. (You cannot unmute yourself via voice because you won't be listening, so do not output UNMUTE_MIC unless they specifically ask it in context, but mainly focus on muting).
+IMPORTANT MIC & TTS CONTROLS:
+You can control both your microphone and your text-to-speech voice. Use these commands exactly:
+- Mute microphone: [MUTE_MIC]
+- Unmute microphone: [UNMUTE_MIC]
+- Silence yourself (disable TTS / speak no more): [MUTE_TTS]
+- Unsilence yourself (re-enable TTS): [UNMUTE_TTS]
 Example: "I'll mute myself now. [MUTE_MIC]"
+Example: "Going silent. [MUTE_TTS]"
+Example: "I'm back. [UNMUTE_TTS]"
 
 IMPORTANT TIMER CONTROLS:
 You can set, cancel, or stop timers. When the user asks you to set a timer, determine the duration in seconds and the name/label they specified (default to "Timer" if none specified), and output the exact command [SET_TIMER: duration, label] in your RESPONSE. If the user asks to cancel or delete a timer, output [CANCEL_TIMER: label] in your RESPONSE.
@@ -925,21 +993,33 @@ Example: "Timer set for 10 seconds. [SET_TIMER: 10, Timer]"
 Example: "Cancelling your brush timer. [CANCEL_TIMER: brush]"
 
 IMPORTANT TASK / CHECKLIST CONTROLS:
-You can manage the user's checklist/tasks. When the user asks you to add a task, remove a task, clear all tasks, or set due dates, output the exact corresponding command in your RESPONSE:
+You can manage the user's checklist/tasks. When the user asks you to add, remove, complete, or update a task, output the exact corresponding command in your RESPONSE.
+CRITICAL RULES:
+1. If the user says "mark as complete", "check off", "done", "finish" or similar WITHOUT specifying which task by name, you MUST ask which task via [FOLLOW_UP]. NEVER guess.
+2. If the user says "remove" or "cancel" a task WITHOUT specifying which task, you MUST ask which one via [FOLLOW_UP].
+3. NEVER say you completed or removed a task unless you are outputting the actual command to do so.
+
 - Add a task: [ADD_TASK: text, optional_due_date]
 - Remove/delete a task: [REMOVE_TASK: text_or_id]
+- Mark a task as complete/done: [COMPLETE_TASK: text_or_id]
+- Unmark / mark incomplete: [UNCOMPLETE_TASK: text_or_id]
 - Clear all tasks: [CLEAR_ALL_TASKS]
 - Set task due date: [SET_TASK_DUE: text_or_id, due_date]
 Example: "Adding buy milk to your checklist. [ADD_TASK: buy milk]"
-Example: "I'll add wash car due tomorrow morning to your tasks. [ADD_TASK: wash car, tomorrow morning]"
 Example: "Removing the buy milk task. [REMOVE_TASK: buy milk]"
-Example: "Setting due date for wash car to tonight. [SET_TASK_DUE: wash car, tonight]"
+Example: "Marked buy milk as done. [COMPLETE_TASK: buy milk]"
 Example: "Clearing all tasks for you. [CLEAR_ALL_TASKS]"
+Example: "Which task would you like me to mark as complete? [FOLLOW_UP]"
 
 IMPORTANT SYSTEM LAUNCH CONTROLS:
 You HAVE FULL CAPABILITY to open or launch applications on the user's computer. Whenever the user asks you to open an app (e.g. Discord, Chrome, Word, etc.), you MUST output the command [OPEN_APP: AppName] in your RESPONSE. NEVER say you cannot open apps.
 Example: "Opening Discord for you now. [OPEN_APP: Discord]"
 Example: "I'll launch Chrome right away. [OPEN_APP: Google Chrome]"
+
+IMPORTANT FOLLOW-UP:
+If you need more information from the user to complete their request (e.g. you need to know which timer, which task, a clarification, a name, etc.), you MUST output the command [FOLLOW_UP] at the END of your RESPONSE. This will open a 5-second microphone window for them to answer. Only use this when genuinely needed.
+Example: "Which timer would you like me to cancel? [FOLLOW_UP]"
+Example: "Got it, what should I name the task? [FOLLOW_UP]"
 
 Your response will be spoken aloud, so do NOT use markdown, bullet points, code blocks, or any visual formatting.
 
@@ -1034,11 +1114,508 @@ RESPONSE: [your conversational response]`;
   throw new Error('Rate limited across all keys. Please try again later.');
 }
 
+async function sendTextToGemini(textInput, base64Image = null) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+
+  let locationContext = '';
+  if (userCity || userState || userCountry) {
+    locationContext = `\nThe user is currently located in: ${[userCity, userState, userCountry].filter(Boolean).join(', ')}.`;
+  }
+
+  const currentTime = new Date().toLocaleString('en-US', { 
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', 
+    hour: '2-digit', minute: '2-digit', second: '2-digit', timeZoneName: 'short' 
+  });
+  
+  const timeContext = `\nThe current local time for the user is: ${currentTime}. Use this exact time and location for all temporal or local queries.`;
+
+  const systemInstruction = `You are Olanga, a simple, chill, and obedient AI voice assistant.
+The user is your boss. Refer to them as "Boss". Keep your answers concise, direct, and conversational.
+Use a relaxed, natural speaking style. Don't sound like a robot. Use conversational fillers naturally, BUT do NOT say "Let me check" or "I'll look that up". Just give the grounded answer immediately.
+You have FULL ACCESS to Google Search via the google_search tool. You MUST use your search tool to provide accurate, real-time answers for weather, news, sports, and current events. IMPORTANT: When reporting weather or temperature, ALWAYS use Fahrenheit unless the user specifically asks for Celsius.${locationContext}${timeContext}
+The user will provide a text message. Respond to their request.
+
+IMPORTANT VISION INSTRUCTIONS:
+If the user asks you to look at something on their screen, or mentions an error, image, or anything visual that you would need to see to answer, AND there is no image attached to the prompt, output EXACTLY the command [REQUEST_SCREENSHOT] and nothing else.
+HOWEVER, if there is ALREADY an image attached to the prompt, you MUST NOT output [REQUEST_SCREENSHOT]. Instead, you must look at the attached image and answer the user's question directly!
+
+IMPORTANT SPOTIFY INSTRUCTIONS:
+You HAVE FULL CAPABILITY to play music, songs, artists, playlists, and albums on Spotify. Whenever the user asks you to play any of these, you MUST comply and output the command [SPOTIFY_TYPE: Search Term] in your RESPONSE. NEVER say you cannot play music or control Spotify, because you can. Do not use quotes inside the command.
+For "TYPE", use SONG, ALBUM, PLAYLIST, or ARTIST.
+Example for a song: "I'll play that for you right now. [SPOTIFY_SONG: Shape of You by Ed Sheeran]"
+Example for an album: "Playing the album right now. [SPOTIFY_ALBUM: The Dark Side of the Moon by Pink Floyd]"
+Example for an artist: "Here is some music by Drake. [SPOTIFY_ARTIST: Drake]"
+Example for a playlist: "Playing your playlist now. [SPOTIFY_PLAYLIST: Liked Songs]"
+
+IMPORTANT MEDIA AND SYSTEM CONTROLS:
+You can control the system's volume and media playback. Whenever the user asks you to pause, play, skip, or change the volume, output the exact corresponding command in your RESPONSE:
+- Pause or Resume playback: [MEDIA_PLAY_PAUSE]
+- Next Track or Skip: [MEDIA_NEXT]
+- Previous Track: [MEDIA_PREV]
+- Volume Up: [VOLUME_UP]
+- Volume Down: [VOLUME_DOWN]
+- Mute or Unmute Volume: [VOLUME_MUTE]
+Example: "I'll turn that down for you. [VOLUME_DOWN]"
+Example: "Skipping to the next song. [MEDIA_NEXT]"
+
+IMPORTANT MIC & TTS CONTROLS:
+You can control both your microphone and your text-to-speech voice. Use these commands exactly:
+- Mute microphone: [MUTE_MIC]
+- Unmute microphone: [UNMUTE_MIC]
+- Silence yourself (disable TTS / speak no more): [MUTE_TTS]
+- Unsilence yourself (re-enable TTS): [UNMUTE_TTS]
+Example: "I'll mute myself now. [MUTE_MIC]"
+Example: "Going silent. [MUTE_TTS]"
+Example: "I'm back. [UNMUTE_TTS]"
+
+IMPORTANT TIMER CONTROLS:
+You can set, cancel, or stop timers. When the user asks you to set a timer, determine the duration in seconds and the name/label they specified (default to "Timer" if none specified), and output the exact command [SET_TIMER: duration, label] in your RESPONSE. If the user asks to cancel or delete a timer, output [CANCEL_TIMER: label] in your RESPONSE.
+Example: "Setting a timer for 3 minutes named brush. [SET_TIMER: 180, brush]"
+Example: "Timer set for 10 seconds. [SET_TIMER: 10, Timer]"
+Example: "Cancelling your brush timer. [CANCEL_TIMER: brush]"
+
+IMPORTANT TASK / CHECKLIST CONTROLS:
+You can manage the user's checklist/tasks. When the user asks you to add, remove, complete, or update a task, output the exact corresponding command in your RESPONSE.
+CRITICAL RULES:
+1. If the user says "mark as complete", "check off", "done", "finish" or similar WITHOUT specifying which task by name, you MUST ask which task via [FOLLOW_UP]. NEVER guess.
+2. If the user says "remove" or "cancel" a task WITHOUT specifying which task, you MUST ask which one via [FOLLOW_UP].
+3. NEVER say you completed or removed a task unless you are outputting the actual command to do so.
+
+- Add a task: [ADD_TASK: text, optional_due_date]
+- Remove/delete a task: [REMOVE_TASK: text_or_id]
+- Mark a task as complete/done: [COMPLETE_TASK: text_or_id]
+- Unmark / mark incomplete: [UNCOMPLETE_TASK: text_or_id]
+- Clear all tasks: [CLEAR_ALL_TASKS]
+- Set task due date: [SET_TASK_DUE: text_or_id, due_date]
+Example: "Adding buy milk to your checklist. [ADD_TASK: buy milk]"
+Example: "Removing the buy milk task. [REMOVE_TASK: buy milk]"
+Example: "Marked buy milk as done. [COMPLETE_TASK: buy milk]"
+Example: "Clearing all tasks for you. [CLEAR_ALL_TASKS]"
+Example: "Which task would you like me to mark as complete? [FOLLOW_UP]"
+
+IMPORTANT SYSTEM LAUNCH CONTROLS:
+You HAVE FULL CAPABILITY to open or launch applications on the user's computer. Whenever the user asks you to open an app (e.g. Discord, Chrome, Word, etc.), you MUST output the command [OPEN_APP: AppName] in your RESPONSE. NEVER say you cannot open apps.
+Example: "Opening Discord for you now. [OPEN_APP: Discord]"
+Example: "I'll launch Chrome right away. [OPEN_APP: Google Chrome]"
+
+IMPORTANT FOLLOW-UP:
+If you need more information from the user to complete their request (e.g. you need to know which timer, which task, a clarification, a name, etc.), you MUST output the command [FOLLOW_UP] at the END of your RESPONSE. This will open a 5-second microphone window for them to answer. Only use this when genuinely needed.
+Example: "Which timer would you like me to cancel? [FOLLOW_UP]"
+Example: "Got it, what should I name the task? [FOLLOW_UP]"
+
+Your response will be spoken aloud, so do NOT use markdown, bullet points, code blocks, or any visual formatting.
+
+Format your response EXACTLY like this:
+USER_SAID: [the user's text message here]
+RESPONSE: [your conversational response]`;
+
+  const requestParts = [];
+  
+  if (base64Image) {
+    const justData = base64Image.split(',')[1];
+    requestParts.push({ inline_data: { mime_type: 'image/png', data: justData } });
+  }
+
+  let textPrompt = `Context: ${buildHistoryContext()}\nThe user typed: "${textInput}". Please respond.`;
+  if (base64Image) {
+    textPrompt = `Context: ${buildHistoryContext()}\nThe user typed: "${textInput}". Here is the screenshot they just provided for you to look at. Answer their request.`;
+  }
+  
+  requestParts.push({ text: textPrompt });
+
+  const body = {
+    system_instruction: {
+      parts: [{ text: systemInstruction }]
+    },
+    tools: [
+      { google_search: {} }
+    ],
+    contents: [{
+      parts: requestParts
+    }],
+    generationConfig: {
+      temperature: 0.7,
+      topP: 0.95,
+      topK: 40,
+      maxOutputTokens: 400
+    }
+  };
+
+  let keysTriedThisCall = 0;
+  const maxKeyAttempts = apiKeyRotation ? apiKeys.length : 1;
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+
+    if (response.status === 429) {
+      if (apiKeyRotation && keysTriedThisCall < maxKeyAttempts - 1) {
+        currentKeyIndex = (currentKeyIndex + 1) % apiKeys.length;
+        apiKey = apiKeys[currentKeyIndex];
+        keysTriedThisCall++;
+        console.log(`[Olanga] Rate limited! Rotating to Key ${currentKeyIndex + 1}...`);
+        continue;
+      }
+      const waitTime = (attempt + 1) * 15;
+      console.log(`[Olanga] Rate limited. Waiting ${waitTime}s...`);
+      await new Promise(r => setTimeout(r, waitTime * 1000));
+      keysTriedThisCall = 0;
+      continue;
+    }
+
+    if (!response.ok) {
+      const errText = await response.text();
+      let errMsg;
+      try {
+        const errData = JSON.parse(errText);
+        errMsg = `Google API Error ${errData?.error?.code}: ${errData?.error?.message}`;
+      } catch {
+        errMsg = `HTTP ${response.status}: ${errText.substring(0, 200)}`;
+      }
+      throw new Error(errMsg);
+    }
+
+    const data = await response.json();
+    if (data.candidates && data.candidates[0]?.content?.parts?.[0]?.text) {
+      return data.candidates[0].content.parts[0].text.trim();
+    }
+    throw new Error('No response from Gemini');
+  }
+  
+  throw new Error('Rate limited across all keys. Please try again later.');
+}
+
+async function processTextCommandWithGemini(userTextInput) {
+  if (!apiKey) {
+    showError('Please configure your Gemini API key in settings');
+    return;
+  }
+  if (!userTextInput.trim()) return;
+
+  if (isRecording) {
+    cancelRecording();
+  }
+
+  if (followUpTimer) {
+    clearTimeout(followUpTimer);
+    followUpTimer = null;
+  }
+
+  setState(State.THINKING);
+  hint.classList.add('hidden');
+  
+  try {
+    console.log(`[Olanga] 🚀 Dispatching TEXT request to Gemini API...`);
+
+    const response = await sendTextToGemini(userTextInput);
+    
+    // DEBUG: Log raw response from Gemini (text mode)
+    console.log('[Olanga DEBUG] Raw Gemini response (text):', JSON.stringify(response));
+    
+    let parsed = parseResponse(response);
+    
+    // DEBUG: Log parsed response
+    console.log('[Olanga DEBUG] Parsed response (text):', JSON.stringify(parsed.response));
+    
+    // In text mode, we already know exactly what the user said
+    userText.textContent = userTextInput;
+    transcriptUser.classList.remove('hidden');
+
+    // Add to history
+    conversationHistory.push({ role: 'user', text: userTextInput });
+
+    let spokenResponse = parsed.response;
+    
+    // Intercept Open App command
+    const openAppMatch = spokenResponse.match(/\[OPEN_APP:\s*([^\]]+)\]/i);
+    if (openAppMatch) {
+      const appName = openAppMatch[1].trim();
+      console.log(`[Olanga] 🖥️ Opening App: ${appName}`);
+      window.electronAPI.openApp(appName);
+      spokenResponse = spokenResponse.replace(openAppMatch[0], '').trim();
+      if (!spokenResponse) spokenResponse = `Opening ${appName} for you now.`;
+    }
+
+    const spotifyMatch = spokenResponse.match(/\[SPOTIFY_(SONG|ALBUM|PLAYLIST|ARTIST):\s*([^\]]+)\]/i);
+    if (spotifyMatch) {
+      const type = spotifyMatch[1].toUpperCase();
+      const searchTerm = spotifyMatch[2].trim().replace(/^"|"$/g, '');
+      console.log(`[Olanga] 🎵 Requesting Spotify play for ${type}: ${searchTerm}`);
+      window.electronAPI.playSpotify(type, searchTerm);
+      spokenResponse = spokenResponse.replace(spotifyMatch[0], '').trim();
+      if (!spokenResponse) spokenResponse = `Playing your request on Spotify.`;
+    }
+
+    // Intercept Media/Volume commands
+    const mediaRegex = /\[(MEDIA_PLAY_PAUSE|MEDIA_NEXT|MEDIA_PREV|VOLUME_UP|VOLUME_DOWN|VOLUME_MUTE)\]/ig;
+    let mediaMatch;
+    while ((mediaMatch = mediaRegex.exec(spokenResponse)) !== null) {
+      const command = mediaMatch[1].toUpperCase();
+      console.log(`[Olanga] 🎛️ Media control requested: ${command}`);
+      window.electronAPI.mediaControl(command);
+    }
+    spokenResponse = spokenResponse.replace(mediaRegex, '').trim();
+
+    // Intercept Mic Mute/Unmute command
+    const micMuteRegex = /\[(MUTE_MIC|UNMUTE_MIC|MUTE_TTS|UNMUTE_TTS)\]/ig;
+    let micMuteMatch;
+    while ((micMuteMatch = micMuteRegex.exec(spokenResponse)) !== null) {
+      const command = micMuteMatch[1].toUpperCase();
+      console.log(`[Olanga] 🎙️ Audio control requested: ${command}`);
+      if (command === 'MUTE_MIC') muteMic();
+      else if (command === 'UNMUTE_MIC') unmuteMic();
+      else if (command === 'MUTE_TTS') muteTts();
+      else if (command === 'UNMUTE_TTS') unmuteTts();
+    }
+    spokenResponse = spokenResponse.replace(micMuteRegex, '').trim();
+
+    // Intercept Timer commands
+    const setTimerMatch = spokenResponse.match(/\[SET_TIMER:\s*(\d+),\s*([^\]]+)\]/i);
+    if (setTimerMatch) {
+      const duration = parseInt(setTimerMatch[1]);
+      const label = setTimerMatch[2].trim();
+      console.log(`[Olanga] ⏱️ Timer requested: ${duration}s, labeled: ${label}`);
+      createTimer(duration, label);
+      spokenResponse = spokenResponse.replace(setTimerMatch[0], '').trim();
+    }
+
+    const cancelTimerMatch = spokenResponse.match(/\[CANCEL_TIMER:\s*([^\]]+)\]/i);
+    if (cancelTimerMatch) {
+      const label = cancelTimerMatch[1].trim();
+      console.log(`[Olanga] ⏱️ Cancel timer requested: ${label}`);
+      cancelTimerByLabel(label);
+      spokenResponse = spokenResponse.replace(cancelTimerMatch[0], '').trim();
+    }
+
+    // Intercept Task commands
+    const addTaskMatch = spokenResponse.match(/\[ADD_TASK:\s*([^,\]]+)(?:,\s*([^\]]+))?\]/i);
+    if (addTaskMatch) {
+      const text = addTaskMatch[1].trim();
+      const dueDate = addTaskMatch[2] ? addTaskMatch[2].trim() : null;
+      console.log(`[Olanga] 📋 Task add requested: "${text}", due: ${dueDate}`);
+      addTask(text, dueDate);
+      spokenResponse = spokenResponse.replace(addTaskMatch[0], '').trim();
+    }
+
+    const removeTaskMatch = spokenResponse.match(/\[REMOVE_TASK:\s*([^\]]+)\]/i);
+    if (removeTaskMatch) {
+      const target = removeTaskMatch[1].trim();
+      console.log(`[Olanga] 📋 Task remove requested for: "${target}"`);
+      removeTask(target);
+      spokenResponse = spokenResponse.replace(removeTaskMatch[0], '').trim();
+    }
+
+    const clearTasksMatch = spokenResponse.match(/\[CLEAR_ALL_TASKS\]/i);
+    if (clearTasksMatch) {
+      console.log(`[Olanga] 📋 Task clear all requested`);
+      clearAllTasks();
+      spokenResponse = spokenResponse.replace(clearTasksMatch[0], '').trim();
+    }
+
+    const setTaskDueMatch = spokenResponse.match(/\[SET_TASK_DUE:\s*([^,\]]+),\s*([^\]]+)\]/i);
+    if (setTaskDueMatch) {
+      const target = setTaskDueMatch[1].trim();
+      const dueDate = setTaskDueMatch[2].trim();
+      console.log(`[Olanga] 📋 Task due date update requested for: "${target}" to "${dueDate}"`);
+      setTaskDue(target, dueDate);
+      spokenResponse = spokenResponse.replace(setTaskDueMatch[0], '').trim();
+    }
+
+    const completeTaskMatch2 = spokenResponse.match(/\[COMPLETE_TASK:\s*([^\]]+)\]/i);
+    if (completeTaskMatch2) {
+      const target = completeTaskMatch2[1].trim();
+      console.log(`[Olanga] 📋 Task complete requested for: "${target}"`);
+      completeTask(target, true);
+      spokenResponse = spokenResponse.replace(completeTaskMatch2[0], '').trim();
+    }
+
+    const uncompleteTaskMatch2 = spokenResponse.match(/\[UNCOMPLETE_TASK:\s*([^\]]+)\]/i);
+    if (uncompleteTaskMatch2) {
+      const target = uncompleteTaskMatch2[1].trim();
+      console.log(`[Olanga] 📋 Task uncomplete requested for: "${target}"`);
+      completeTask(target, false);
+      spokenResponse = spokenResponse.replace(uncompleteTaskMatch2[0], '').trim();
+    }
+
+    // Intercept Follow-Up request (catch variants: [FOLLOW_UP], [follow_up], [Follow Up], [followup])
+    const followUpRegex2 = /\[FOLLOW[_ ]?UP\]/gi;
+    const wantsFollowUp = followUpRegex2.test(spokenResponse) || spokenResponse.trim().endsWith('?');
+    console.log('[Olanga DEBUG] wantsFollowUp (text) =', wantsFollowUp, '| spokenResponse before strip:', JSON.stringify(spokenResponse));
+    spokenResponse = spokenResponse.replace(/\[FOLLOW[_ ]?UP\]/gi, '').trim();
+
+    // Intercept Screenshot request
+    if (spokenResponse.includes('[REQUEST_SCREENSHOT]')) {
+      console.log(`[Olanga] 📸 Screenshot requested by AI`);
+      aiText.textContent = "Please select an area on your screen...";
+      const base64Image = await window.electronAPI.requestScreenshot();
+      if (!base64Image) {
+        console.log(`[Olanga] 📸 Screenshot cancelled by user or timed out`);
+        aiText.textContent = "Screenshot cancelled.";
+        setState(State.IDLE);
+        return;
+      }
+      aiText.textContent = "Processing image...";
+      const secondResponseRaw = await sendTextToGemini(userTextInput, base64Image);
+      parsed = parseResponse(secondResponseRaw);
+      spokenResponse = parsed.response;
+    }
+
+    conversationHistory.push({ role: 'model', text: spokenResponse });
+
+    if (conversationHistory.length > 20) {
+      conversationHistory = conversationHistory.slice(-16);
+    }
+
+    aiText.textContent = spokenResponse;
+    transcriptAi.classList.remove('hidden');
+
+    if (wantsFollowUp) {
+      console.log('[Olanga] 🔁 AI requested a follow-up from the user (text mode)');
+      await speakResponseAndThen(spokenResponse, () => enterAiFollowUpMode());
+    } else {
+      speakResponse(spokenResponse);
+    }
+
+  } catch (error) {
+    console.error('[Olanga] ❌ Processing error:', error);
+    showError(error.message || 'Failed to process text');
+    setState(State.IDLE);
+  }
+}
+
 function buildHistoryContext() {
-  if (conversationHistory.length === 0) return '';
-  const recent = conversationHistory.slice(-6);
-  const lines = recent.map(m => `${m.role === 'user' ? 'User' : 'Olanga'}: ${m.text}`);
-  return `Recent conversation:\n${lines.join('\n')}`;
+  let context = '';
+  
+  if (activeTasks && activeTasks.length > 0) {
+    const taskNames = activeTasks.map(t => `- "${t.text}" (Completed: ${t.completed})`).join('\n');
+    context += `CURRENT TASKS:\n${taskNames}\n\n`;
+  }
+  
+  if (conversationHistory.length > 0) {
+    const recent = conversationHistory.slice(-6);
+    const lines = recent.map(m => `${m.role === 'user' ? 'User' : 'Olanga'}: ${m.text}`);
+    context += `Recent conversation:\n${lines.join('\n')}`;
+  }
+  
+  return context;
+}
+
+// ============================================
+// FOLLOW-UP HELPERS
+// ============================================
+
+// Speaks a response then fires a callback once done (works with both NVIDIA and browser TTS)
+async function speakResponseAndThen(text, callback) {
+  if (isTtsMuted) {
+    if (callback) callback();
+    else setState(State.IDLE);
+    return;
+  }
+
+  setState(State.SPEAKING);
+  synthesis.cancel();
+
+  if (!nvidiaApiKey) {
+    // Browser TTS path
+    fallbackTTSAndThen(text, callback);
+    return;
+  }
+
+  try {
+    const response = await fetch('https://integrate.api.nvidia.com/v1/audio/speech', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${nvidiaApiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ model: 'magpie-tts-zeroshot', input: text })
+    });
+
+    if (!response.ok) throw new Error('NVIDIA TTS failed');
+
+    const audioBlob = await response.blob();
+    const audioUrl = URL.createObjectURL(audioBlob);
+    const audio = new Audio(audioUrl);
+    audio.volume = isMuted ? 0 : currentVolume;
+    currentTTSAudio = audio;
+
+    audio.addEventListener('ended', () => {
+      URL.revokeObjectURL(audioUrl);
+      currentTTSAudio = null;
+      if (callback) callback();
+      else setState(State.IDLE);
+    });
+    audio.addEventListener('error', () => {
+      URL.revokeObjectURL(audioUrl);
+      currentTTSAudio = null;
+      if (callback) callback();
+      else setState(State.IDLE);
+    });
+
+    audio.play();
+  } catch (err) {
+    console.warn('[Olanga] NVIDIA TTS failed in speakResponseAndThen, falling back to browser TTS:', err.message);
+    fallbackTTSAndThen(text, callback);
+  }
+}
+
+function fallbackTTSAndThen(text, callback) {
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.rate = 1.05;
+  utterance.pitch = 1.0;
+  utterance.volume = isMuted ? 0 : currentVolume;
+  
+  utterance.onend = () => { 
+    if (callback) callback(); 
+    else setState(State.IDLE);
+  };
+  utterance.onerror = (e) => { 
+    console.error('[Olanga] Fallback TTS error:', e);
+    if (callback) callback(); 
+    else setState(State.IDLE);
+  };
+
+  synthesis.speak(utterance);
+}
+
+// Opens a 5-second listening window specifically triggered by an AI [FOLLOW_UP] command
+function enterAiFollowUpMode() {
+  if (isMicMuted) {
+    console.log('[Olanga] Mic is muted. Entering text-based follow-up window.');
+    setState(State.IDLE, true); // Go IDLE but preserve memory so they can type
+    hint.innerHTML = 'Waiting for your typed reply...';
+    hint.classList.remove('hidden');
+    
+    if (followUpTimer) clearTimeout(followUpTimer);
+    followUpTimer = setTimeout(() => {
+      console.log('[Olanga] AI follow-up window expired (text)');
+      setState(State.IDLE); // Clear memory for real
+      followUpTimer = null;
+    }, 5000);
+    return;
+  }
+
+  setState(State.LISTENING);
+  hint.innerHTML = 'Listening for your reply...';
+  hint.classList.remove('hidden');
+  startRecording();
+
+  if (followUpTimer) clearTimeout(followUpTimer);
+
+  followUpTimer = setTimeout(() => {
+    if (currentState === State.LISTENING) {
+      console.log('[Olanga] AI follow-up window expired (voice)');
+      cancelRecording();
+      setState(State.IDLE);
+      followUpTimer = null;
+      hint.innerHTML = 'Say <strong>"Hey Olanga"</strong> to start';
+    }
+  }, 5000); // 5 seconds as requested
 }
 
 function parseResponse(raw) {
@@ -1066,6 +1643,11 @@ function parseResponse(raw) {
 // ============================================
 
 async function speakResponse(text) {
+  if (isTtsMuted) {
+    setState(State.IDLE);
+    return;
+  }
+
   setState(State.SPEAKING);
   synthesis.cancel();
 
@@ -1282,8 +1864,19 @@ function initAudioControls() {
     unmuteMic();
   }
 
+  const savedTtsMute = localStorage.getItem('olanga_tts_muted');
+  if (savedTtsMute === 'true') {
+    muteTts();
+  } else {
+    unmuteTts();
+  }
+
   if (micToggleBtn) {
     micToggleBtn.addEventListener('click', toggleMic);
+  }
+
+  if (ttsToggleBtn) {
+    ttsToggleBtn.addEventListener('click', toggleTts);
   }
 }
 
@@ -1325,6 +1918,42 @@ function toggleMic() {
     unmuteMic();
   } else {
     muteMic();
+  }
+}
+
+function muteTts() {
+  isTtsMuted = true;
+  if (ttsToggleBtn) {
+    ttsToggleBtn.classList.add('muted');
+    ttsToggleBtn.title = "Unmute Olanga (Enable TTS)";
+  }
+  if (ttsIconOn && ttsIconOff) {
+    ttsIconOn.style.display = 'none';
+    ttsIconOff.style.display = 'block';
+  }
+  localStorage.setItem('olanga_tts_muted', 'true');
+  console.log('[Olanga] TTS muted');
+}
+
+function unmuteTts() {
+  isTtsMuted = false;
+  if (ttsToggleBtn) {
+    ttsToggleBtn.classList.remove('muted');
+    ttsToggleBtn.title = "Silence Olanga (Disable TTS)";
+  }
+  if (ttsIconOn && ttsIconOff) {
+    ttsIconOn.style.display = 'block';
+    ttsIconOff.style.display = 'none';
+  }
+  localStorage.setItem('olanga_tts_muted', 'false');
+  console.log('[Olanga] TTS unmuted');
+}
+
+function toggleTts() {
+  if (isTtsMuted) {
+    unmuteTts();
+  } else {
+    muteTts();
   }
 }
 
@@ -1646,6 +2275,24 @@ function toggleTaskComplete(id) {
     task.completed = !task.completed;
     saveTasks();
     renderTasks();
+  }
+}
+
+function completeTask(idOrText, markDone = true) {
+  const lowercaseVal = idOrText.toLowerCase().trim();
+
+  let task = activeTasks.find(t => t.id === idOrText);
+  if (!task) {
+    task = activeTasks.find(t => t.text.toLowerCase().includes(lowercaseVal));
+  }
+
+  if (task) {
+    task.completed = markDone;
+    saveTasks();
+    renderTasks();
+    console.log(`[Olanga] ✅ Task "${task.text}" marked as ${markDone ? 'complete' : 'incomplete'}`);
+  } else {
+    console.warn(`[Olanga] ⚠️ Could not find task matching: "${idOrText}"`);
   }
 }
 

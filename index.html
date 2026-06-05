@@ -102,22 +102,49 @@
         Say <strong>"Hey Olanga"</strong> to start
       </div>
 
-      <!-- Mic Toggle -->
-      <button class="mic-toggle-btn" id="micToggleBtn" title="Mute / Unmute Microphone">
-        <svg class="mic-icon" id="micIconOn" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
-          <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
-          <line x1="12" y1="19" x2="12" y2="23"></line>
-          <line x1="8" y1="23" x2="16" y2="23"></line>
-        </svg>
-        <svg class="mic-icon mic-off-icon" id="micIconOff" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none;">
-          <line x1="1" y1="1" x2="23" y2="23"></line>
-          <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"></path>
-          <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17"></path>
-          <line x1="12" y1="19" x2="12" y2="23"></line>
-          <line x1="8" y1="23" x2="16" y2="23"></line>
-        </svg>
-      </button>
+      <!-- Text Command Input -->
+      <div class="text-command-wrapper" id="textCommandWrapper">
+        <input type="text" id="textCommandInput" placeholder="Type a command..." autocomplete="off">
+        <button id="textCommandBtn" title="Send Command">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="22" y1="2" x2="11" y2="13"></line>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Bottom Controls -->
+      <div class="bottom-controls-row">
+        <!-- Mic Toggle -->
+        <button class="mic-toggle-btn" id="micToggleBtn" title="Mute / Unmute Microphone">
+          <svg class="mic-icon" id="micIconOn" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+            <line x1="12" y1="19" x2="12" y2="23"></line>
+            <line x1="8" y1="23" x2="16" y2="23"></line>
+          </svg>
+          <svg class="mic-icon mic-off-icon" id="micIconOff" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none;">
+            <line x1="1" y1="1" x2="23" y2="23"></line>
+            <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"></path>
+            <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17"></path>
+            <line x1="12" y1="19" x2="12" y2="23"></line>
+            <line x1="8" y1="23" x2="16" y2="23"></line>
+          </svg>
+        </button>
+
+        <!-- TTS Toggle (Headphones) -->
+        <button class="mic-toggle-btn" id="ttsToggleBtn" title="Silence Olanga (Disable TTS)">
+          <svg class="mic-icon" id="ttsIconOn" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 18v-6a9 9 0 0 1 18 0v6"></path>
+            <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"></path>
+          </svg>
+          <svg class="mic-icon mic-off-icon" id="ttsIconOff" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none;">
+            <line x1="1" y1="1" x2="23" y2="23"></line>
+            <path d="M3 18v-6a9 9 0 0 1 18 0v6"></path>
+            <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"></path>
+          </svg>
+        </button>
+      </div>
 
       <!-- Timers container (bottom-left) -->
       <div class="timers-card-wrapper" id="timersWidget">

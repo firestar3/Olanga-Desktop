@@ -726,11 +726,75 @@ body.state-speaking #orbCanvas {
 }
 
 /* ============================================
-   MIC TOGGLE BUTTON
+   TEXT COMMAND INPUT
    ============================================ */
 
-.mic-toggle-btn {
+.text-command-wrapper {
+  margin-top: 16px;
+  width: 100%;
+  max-width: 400px;
+  display: flex;
+  align-items: center;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  padding: 4px;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.text-command-wrapper:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(108, 92, 231, 0.15);
+}
+
+.text-command-wrapper input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  padding: 10px 16px;
+  color: var(--text-primary);
+  font-family: var(--font);
+  font-size: 14px;
+  outline: none;
+}
+
+.text-command-wrapper input::placeholder {
+  color: var(--text-dim);
+}
+
+.text-command-wrapper button {
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.text-command-wrapper button:hover {
+  background: var(--accent);
+  color: white;
+  transform: scale(1.05);
+}
+
+/* ============================================
+   MIC & TTS TOGGLE BUTTONS
+   ============================================ */
+
+.bottom-controls-row {
   margin-top: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+
+.mic-toggle-btn {
   width: 56px;
   height: 56px;
   border: none;
