@@ -7,5 +7,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   playSpotify: (type, term) => ipcRenderer.send('play-spotify', { type, term }),
   mediaControl: (cmd) => ipcRenderer.send('media-control', cmd),
   openApp: (appName) => ipcRenderer.send('open-app', appName),
-  requestScreenshot: () => ipcRenderer.invoke('request-screenshot')
+  requestScreenshot: () => ipcRenderer.invoke('request-screenshot'),
+  executeCommand: (payload) => ipcRenderer.invoke('execute-command', payload)
 });

@@ -206,3 +206,60 @@ ipcMain.handle('request-screenshot', async () => {
     }, 500);
   });
 });
+ipcMain.handle('execute-command', async (event, payload) => {
+  const { exec } = require('child_process');
+  
+  let commandStr = '';
+  let commandCwd = null;
+  
+  if (payload && typeof payload === 'object') {
+    commandStr = payload.command || '';
+    commandCwd = payload.cwd || null;
+  } else {
+    commandStr = payload || '';
+  }
+  
+  if (!commandCwd) {
+    const os = require('os');
+    commandCwd = os.homedir();
+  }
+
+  return new Promise((resolve) => {
+    // Append PowerShell instruction to output the current working directory path at the end of execution
+    const fullCommand = `${commandStr}; Write-Output "__CWD__:$((Get-Location).Path)"`;
+    
+    exec(`powershell -NoProfile -Command "${fullCommand.replace(/"/g, '\\"')}"`, 
+      { 
+        timeout: 30000, 
+        maxBuffer: 1024 * 1024,
+        cwd: commandCwd
+      },
+      (error, stdout, stderr) => {
+        let output = stdout || '';
+        let errorOutput = stderr || '';
+        
+        // Parse current working directory from the output
+        const cwdPattern = /__CWD__:(.*)$/m;
+        const match = output.match(cwdPattern);
+        let newCwd = commandCwd;
+        
+        if (match) {
+          newCwd = match[1].trim();
+          output = output.replace(cwdPattern, '').trim();
+        }
+        
+        if (error && !output) {
+          resolve({
+            output: errorOutput || error.message,
+            cwd: newCwd
+          });
+        } else {
+          resolve({
+            output: output + (errorOutput ? '\n' + errorOutput : ''),
+            cwd: newCwd
+          });
+        }
+      }
+    );
+  });
+});
