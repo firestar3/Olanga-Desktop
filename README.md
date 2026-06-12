@@ -68,4 +68,10 @@ To start an interaction, simply say: **"Hey"** (or similar variations like "Hey 
 
 ## Application Photo
 
-<img width="1919" height="1079" alt="image" src="https://github.com/user-attachments/assets/3d6ad370-56c9-42c5-98da-642a43835685" />
+<img width="2559" height="1439" alt="image" src="https://github.com/user-attachments/assets/77a8d0f5-be6a-439a-bb75-b1fd3a91c798" />
+<img width="2557" height="1439" alt="image" src="https://github.com/user-attachments/assets/c72cd236-f7a1-492a-8f40-a2231f415092" />
+<img width="2557" height="1439" alt="image" src="https://github.com/user-attachments/assets/f460ae8a-1288-41c0-b062-5c5adc4aeec3" />
+<img width="2559" height="1439" alt="image" src="https://github.com/user-attachments/assets/7959e695-0d5e-4da6-9d08-be18c72ff153" />
+
+
+
