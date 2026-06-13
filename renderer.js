@@ -179,6 +179,9 @@ function init() {
     if (cityInput) cityInput.value = localStorage.getItem('olanga_city') || '';
     if (stateInput) stateInput.value = localStorage.getItem('olanga_state') || '';
     if (countryInput) countryInput.value = localStorage.getItem('olanga_country') || '';
+    refreshVoiceCatalog().catch((error) => {
+      console.warn('[Olanga] Voice list refresh failed:', error.message);
+    });
   };
   addKeyBtn.addEventListener('click', handleAddKeyFromSettings);
   newKeyInput.addEventListener('keydown', (e) => {
@@ -392,22 +395,41 @@ function updateTtsRateLabel(value) {
 }
 
 function parseVoiceCatalog(responseJson) {
-  const voices = [];
-  if (!responseJson || typeof responseJson !== 'object') {
-    return voices;
-  }
+  const modelConfig = Array.isArray(responseJson?.modelConfig)
+    ? responseJson.modelConfig[0]
+    : Array.isArray(responseJson?.model_config)
+      ? responseJson.model_config[0]
+      : null;
 
-  for (const [languageCode, entry] of Object.entries(responseJson)) {
-    const languageVoices = Array.isArray(entry?.voices) ? entry.voices : [];
-    for (const voiceEntry of languageVoices) {
-      const voiceName = typeof voiceEntry === 'string' ? voiceEntry : (voiceEntry?.voice_name || voiceEntry?.name || voiceEntry?.voiceName || '');
-      if (!voiceName) continue;
-      voices.push({
-        languageCode,
-        voiceName,
-        label: `${voiceName} (${languageCode})`
-      });
-    }
+  const parameters = modelConfig?.parameters || {};
+  const baseVoiceName = parameters.voiceName || defaultNvidiaVoiceName;
+  const rawSubvoices = parameters.subvoices || parameters.subVoices || '';
+  const subvoices = Array.isArray(rawSubvoices)
+    ? rawSubvoices
+    : String(rawSubvoices)
+        .split(',')
+        .map(item => item.trim())
+        .filter(Boolean);
+
+  const voices = subvoices.map((subvoice) => {
+    const [voiceSuffix] = subvoice.split(':');
+    const voiceName = voiceSuffix.startsWith(baseVoiceName)
+      ? voiceSuffix
+      : `${baseVoiceName}.${voiceSuffix}`;
+    const languageCodeMatch = voiceName.match(/(?:magpie-multilingual\.)?([A-Za-z]{2}-[A-Za-z]{2})\./i);
+    return {
+      languageCode: languageCodeMatch ? normalizeLanguageCode(languageCodeMatch[1]) : inferVoiceLanguageCode(voiceName),
+      voiceName,
+      label: voiceName
+    };
+  });
+
+  if (voices.length === 0) {
+    voices.push({
+      languageCode: inferVoiceLanguageCode(baseVoiceName),
+      voiceName: baseVoiceName,
+      label: baseVoiceName
+    });
   }
 
   return voices;
@@ -447,15 +469,15 @@ async function refreshVoiceCatalog() {
   const savedKey = nvidiaApiKey || localStorage.getItem('olanga_nvidia_key') || '';
   if (!savedKey) {
     const defaultOptions = [
-      { value: defaultNvidiaVoiceName, label: `${defaultNvidiaVoiceName} (default)` },
-      { value: 'Magpie-Multilingual.ES-US.Diego', label: 'Magpie-Multilingual.ES-US.Diego (es-US)' },
-      { value: 'Magpie-Multilingual.ES-US.Isabela', label: 'Magpie-Multilingual.ES-US.Isabela (es-US)' }
+      { value: 'Magpie-Multilingual.EN-US.Aria', label: 'Magpie-Multilingual.EN-US.Aria' },
+      { value: 'Magpie-Multilingual.EN-US.Mia', label: 'Magpie-Multilingual.EN-US.Mia' },
+      { value: 'Magpie-Multilingual.EN-US.Kendra', label: 'Magpie-Multilingual.EN-US.Kendra' }
     ];
     const selectedVoice = nvidiaVoiceName || defaultNvidiaVoiceName;
-    const selectedOption = defaultOptions.some(option => option.value === selectedVoice)
-      ? selectedVoice
-      : defaultOptions[0].value;
-    populateVoiceSelect(nvidiaVoiceSelect, defaultOptions, selectedOption, 'No NVIDIA voices found');
+    const voiceOptions = defaultOptions.some(option => option.value === selectedVoice)
+      ? defaultOptions
+      : [{ value: selectedVoice, label: `${selectedVoice} (custom)` }, ...defaultOptions];
+    populateVoiceSelect(nvidiaVoiceSelect, voiceOptions, selectedVoice, 'No NVIDIA voices found');
     if (customVoiceNameInput) {
       customVoiceNameInput.value = selectedVoice;
     }
@@ -463,7 +485,7 @@ async function refreshVoiceCatalog() {
   }
 
   try {
-    const response = await fetch('https://integrate.api.nvidia.com/v1/audio/list_voices', {
+    const response = await fetch('https://integrate.api.nvidia.com/v2/riva/tts/config', {
       headers: {
         Authorization: `Bearer ${savedKey}`
       }
@@ -498,8 +520,8 @@ async function refreshVoiceCatalog() {
     console.warn('[Olanga] Failed to load NVIDIA voices:', error.message);
     const fallbackOptions = [
       { value: 'Magpie-Multilingual.EN-US.Aria', label: 'Magpie-Multilingual.EN-US.Aria (en-US)' },
-      { value: 'Magpie-Multilingual.ES-US.Diego', label: 'Magpie-Multilingual.ES-US.Diego (es-US)' },
-      { value: 'Magpie-Multilingual.ES-US.Isabela', label: 'Magpie-Multilingual.ES-US.Isabela (es-US)' }
+      { value: 'Magpie-Multilingual.EN-US.Mia', label: 'Magpie-Multilingual.EN-US.Mia (en-US)' },
+      { value: 'Magpie-Multilingual.EN-US.Kendra', label: 'Magpie-Multilingual.EN-US.Kendra (en-US)' }
     ];
     const selectedVoice = nvidiaVoiceName || defaultNvidiaVoiceName || fallbackOptions[0].value;
     const voiceOptions = fallbackOptions.some(option => option.value === selectedVoice)
@@ -514,6 +536,117 @@ async function refreshVoiceCatalog() {
       }
     }
   }
+}
+
+function normalizeLanguageCode(languageCode) {
+  if (!languageCode) return 'en-US';
+  const parts = String(languageCode).split('-');
+  if (parts.length !== 2) return String(languageCode);
+  return `${parts[0].toLowerCase()}-${parts[1].toUpperCase()}`;
+}
+
+function encodeVarint(value) {
+  let current = value >>> 0;
+  const bytes = [];
+  while (current > 127) {
+    bytes.push((current & 0x7f) | 0x80);
+    current >>>= 7;
+  }
+  bytes.push(current);
+  return Uint8Array.from(bytes);
+}
+
+function concatUint8Arrays(chunks) {
+  const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const merged = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return merged;
+}
+
+function encodeLengthDelimitedField(fieldNumber, bytes) {
+  return concatUint8Arrays([
+    encodeVarint((fieldNumber << 3) | 2),
+    encodeVarint(bytes.length),
+    bytes
+  ]);
+}
+
+function encodeStringField(fieldNumber, text) {
+  return encodeLengthDelimitedField(fieldNumber, new TextEncoder().encode(text));
+}
+
+function encodeVarintField(fieldNumber, value) {
+  return concatUint8Arrays([
+    encodeVarint((fieldNumber << 3) | 0),
+    encodeVarint(value)
+  ]);
+}
+
+function buildTtsRequestBody(text, voiceConfig) {
+  const fields = [
+    encodeStringField(1, text),
+    encodeStringField(2, voiceConfig.languageCode || 'en-US'),
+    encodeVarintField(3, 1),
+    encodeVarintField(4, 44100),
+    encodeStringField(5, voiceConfig.voiceName),
+    encodeStringField(100, `olanga-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`)
+  ];
+  return concatUint8Arrays(fields);
+}
+
+function readVarint(bytes, startOffset) {
+  let result = 0;
+  let shift = 0;
+  let offset = startOffset;
+  while (offset < bytes.length) {
+    const byte = bytes[offset++];
+    result |= (byte & 0x7f) << shift;
+    if ((byte & 0x80) === 0) {
+      return { value: result >>> 0, offset };
+    }
+    shift += 7;
+  }
+  throw new Error('Unexpected end of protobuf varint');
+}
+
+function readDelimited(bytes, startOffset) {
+  const lengthInfo = readVarint(bytes, startOffset);
+  const endOffset = lengthInfo.offset + lengthInfo.value;
+  return {
+    value: bytes.slice(lengthInfo.offset, endOffset),
+    offset: endOffset
+  };
+}
+
+function parseTtsResponse(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let offset = 0;
+
+  while (offset < bytes.length) {
+    const tagInfo = readVarint(bytes, offset);
+    offset = tagInfo.offset;
+    const fieldNumber = tagInfo.value >>> 3;
+    const wireType = tagInfo.value & 7;
+
+    if (fieldNumber === 1 && wireType === 2) {
+      const audioInfo = readDelimited(bytes, offset);
+      return audioInfo.value;
+    }
+
+    if (wireType === 0) {
+      offset = readVarint(bytes, offset).offset;
+    } else if (wireType === 2) {
+      offset = readDelimited(bytes, offset).offset;
+    } else {
+      throw new Error(`Unsupported protobuf wire type: ${wireType}`);
+    }
+  }
+
+  throw new Error('No audio returned from Magpie TTS');
 }
 
 // ---- API Key Setup ----
@@ -1798,13 +1931,14 @@ function inferVoiceLanguageCode(voiceName) {
   if (!voiceName) return 'en-US';
   const normalized = voiceName.toLowerCase();
   const languageMatch = normalized.match(/(?:magpie-multilingual\.)?([a-z]{2}-[a-z]{2})\./i) || normalized.match(/([a-z]{2}-[a-z]{2})/i);
-  return languageMatch ? languageMatch[1] : 'en-US';
+  return languageMatch ? normalizeLanguageCode(languageMatch[1]) : 'en-US';
 }
 
 function playAudioBlob(blob, callback, doneLabel) {
   const audioUrl = URL.createObjectURL(blob);
   const audio = new Audio(audioUrl);
   audio.volume = isMuted ? 0 : currentVolume;
+  audio.playbackRate = Number.isFinite(ttsRate) ? ttsRate : 1;
   currentTTSAudio = audio;
   audio.addEventListener('ended', () => {
     URL.revokeObjectURL(audioUrl);
@@ -1831,167 +1965,38 @@ function playAudioBlob(blob, callback, doneLabel) {
   });
 }
 
-async function createNvidiaTtsSession(voiceConfig) {
-  const response = await fetch('https://integrate.api.nvidia.com/v1/realtime/synthesis_sessions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${nvidiaApiKey}`
-    },
-    body: JSON.stringify({
-      object: 'realtime.synthesize_session',
-      input_text_synthesis: {
-        language_code: voiceConfig.languageCode || 'en-US',
-        voice_name: voiceConfig.voiceName
-      },
-      output_audio_params: {
-        sample_rate_hz: 22050,
-        num_channels: 1,
-        audio_format: 'LINEAR_PCM'
-      }
-    })
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`NVIDIA TTS session error: ${response.status} ${errorText}`);
-  }
-
-  return response.json();
-}
-
-function buildRealtimeUrls(sessionData) {
-  const urls = [];
-  const base = 'wss://integrate.api.nvidia.com/v1/realtime?intent=synthesize';
-  if (sessionData?.client_secret) {
-    urls.push(`${base}&client_secret=${encodeURIComponent(sessionData.client_secret)}`);
-  }
-  if (sessionData?.id) {
-    urls.push(`${base}&session_id=${encodeURIComponent(sessionData.id)}`);
-    urls.push(`${base}&conversation_id=${encodeURIComponent(sessionData.id)}`);
-  }
-  urls.push(base);
-  return urls;
-}
-
-function connectNvidiaTtsSocket(url, sessionData, text) {
-  return new Promise((resolve, reject) => {
-    const socket = new WebSocket(url);
-    const audioChunks = [];
-    let completed = false;
-    let settled = false;
-
-    const finish = (error) => {
-      if (settled) return;
-      settled = true;
-      if (error) {
-        reject(error);
-        return;
-      }
-      try {
-        const totalLength = audioChunks.reduce((sum, chunk) => sum + chunk.length, 0);
-        const merged = new Uint8Array(totalLength);
-        let offset = 0;
-        for (const chunk of audioChunks) {
-          merged.set(chunk, offset);
-          offset += chunk.length;
-        }
-        resolve(pcmToWav(merged, 22050, 1, 16));
-      } catch (mergeError) {
-        reject(mergeError);
-      }
-    };
-
-    const sendEvent = (type, payload = {}) => {
-      socket.send(JSON.stringify({
-        event_id: `event_${Math.random().toString(36).slice(2, 10)}`,
-        type,
-        ...payload
-      }));
-    };
-
-    socket.addEventListener('open', () => {
-      sendEvent('synthesize_session.update', {
-        session: {
-          input_text_synthesis: {
-            language_code: sessionData?.input_text_synthesis?.language_code || 'en-US',
-            voice_name: sessionData?.input_text_synthesis?.voice_name || 'English-US.Male-1'
-          },
-          output_audio_params: {
-            sample_rate_hz: 22050,
-            num_channels: 1,
-            audio_format: 'LINEAR_PCM'
-          }
-        }
-      });
-      sendEvent('input_text.append', { text });
-      sendEvent('input_text.commit');
-      sendEvent('input_text.done');
-    });
-
-    socket.addEventListener('message', (event) => {
-      let data;
-      try {
-        data = JSON.parse(event.data);
-      } catch (parseError) {
-        return;
-      }
-
-      if (data?.type === 'conversation.item.speech.data' && data.audio) {
-        audioChunks.push(Uint8Array.from(atob(data.audio), char => char.charCodeAt(0)));
-        if (data.is_last_chunk) {
-          completed = true;
-        }
-        return;
-      }
-
-      if (data?.type === 'conversation.item.speech.completed') {
-        completed = true;
-        socket.close();
-        return;
-      }
-
-      if (data?.type === 'error') {
-        finish(new Error(data?.error?.message || 'NVIDIA TTS error'));
-        socket.close();
-      }
-    });
-
-    socket.addEventListener('close', () => {
-      if (completed && audioChunks.length > 0) {
-        finish();
-      } else if (!settled) {
-        finish(new Error('NVIDIA TTS connection closed before audio was ready'));
-      }
-    });
-
-    socket.addEventListener('error', () => {
-      finish(new Error('NVIDIA TTS websocket error'));
-    });
-  });
-}
-
 async function speakWithNvidiaTts(text, callback) {
   if (!nvidiaApiKey) {
     throw new Error('NVIDIA API key is missing');
   }
 
   const voiceConfig = getSelectedNvidiaVoiceConfig();
-  const sessionData = await createNvidiaTtsSession(voiceConfig);
-  const urls = buildRealtimeUrls(sessionData);
-  let lastError = null;
+  const requestBody = buildTtsRequestBody(text, voiceConfig);
+  const response = await fetch('https://integrate.api.nvidia.com/v2/riva/tts/synthesize', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${nvidiaApiKey}`,
+      'Content-Type': 'application/x-protobuf',
+      Accept: 'application/x-protobuf'
+    },
+    body: requestBody
+  });
 
-  for (const url of urls) {
-    try {
-      const wavBlob = await connectNvidiaTtsSocket(url, sessionData, text);
-      playAudioBlob(wavBlob, callback, '[Olanga] Done speaking (NVIDIA TTS)');
-      return true;
-    } catch (error) {
-      lastError = error;
-    }
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`NVIDIA TTS error: ${response.status} ${errorText}`.trim());
   }
 
-  throw lastError || new Error('NVIDIA TTS failed');
+  const responseBuffer = await response.arrayBuffer();
+  let audioBytes;
+  try {
+    audioBytes = parseTtsResponse(responseBuffer);
+  } catch (error) {
+    audioBytes = new Uint8Array(responseBuffer);
+  }
+  const wavBlob = pcmToWav(audioBytes, 44100, 1, 16);
+  playAudioBlob(wavBlob, callback, '[Olanga] Done speaking (Magpie TTS)');
+  return true;
 }
 
 // ============================================
