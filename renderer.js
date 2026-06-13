@@ -18,7 +18,8 @@ let apiKeyRotation = false;
 let currentKeyIndex = 0;
 let apiKey = ''; // current active key
 let nvidiaApiKey = ''; // NVIDIA API key for TTS
-let nvidiaVoiceName = localStorage.getItem('olanga_nvidia_voice') || '';
+const defaultNvidiaVoiceName = 'Magpie-Multilingual.EN-US.Aria';
+let nvidiaVoiceName = localStorage.getItem('olanga_nvidia_voice') || defaultNvidiaVoiceName;
 let fallbackVoiceName = localStorage.getItem('olanga_fallback_voice') || '';
 let ttsRate = Number.parseFloat(localStorage.getItem('olanga_tts_rate') || '1.05');
 let nvidiaVoiceCatalog = [];
@@ -464,7 +465,7 @@ async function refreshVoiceCatalog() {
       value: voice.voiceName,
       label: voice.label
     }));
-    const selectedVoice = nvidiaVoiceName || voiceOptions[0]?.value || '';
+    const selectedVoice = nvidiaVoiceName || defaultNvidiaVoiceName || voiceOptions[0]?.value || '';
     const resolvedVoice = populateVoiceSelect(nvidiaVoiceSelect, voiceOptions, selectedVoice, 'No NVIDIA voices found');
     if (resolvedVoice) {
       nvidiaVoiceName = resolvedVoice;
@@ -473,11 +474,12 @@ async function refreshVoiceCatalog() {
   } catch (error) {
     console.warn('[Olanga] Failed to load NVIDIA voices:', error.message);
     const fallbackOptions = [
+      { value: 'Magpie-Multilingual.EN-US.Aria', label: 'Magpie-Multilingual.EN-US.Aria (en-US)' },
       { value: 'English-US.Male-1', label: 'English-US.Male-1 (en-US)' },
       { value: 'English-US.Female-1', label: 'English-US.Female-1 (en-US)' },
       { value: 'English-US.Male-2', label: 'English-US.Male-2 (en-US)' }
     ];
-    const selectedVoice = nvidiaVoiceName || fallbackOptions[0].value;
+    const selectedVoice = nvidiaVoiceName || defaultNvidiaVoiceName || fallbackOptions[0].value;
     const resolvedVoice = populateVoiceSelect(nvidiaVoiceSelect, fallbackOptions, selectedVoice, 'No NVIDIA voices found');
     if (resolvedVoice) {
       nvidiaVoiceName = resolvedVoice;
