@@ -322,6 +322,32 @@
       </div>
 
       <div class="settings-section" style="margin-top: 24px; border-top: 1px solid var(--border-subtle); padding-top: 16px;">
+        <h3>Voice Settings</h3>
+        <p class="settings-hint">Pick the NVIDIA voice and adjust how fallback speech behaves.</p>
+        <div class="voice-settings-grid">
+          <div class="voice-settings-row">
+            <label for="nvidiaVoiceSelect">NVIDIA Voice</label>
+            <select id="nvidiaVoiceSelect">
+              <option value="">Loading voices...</option>
+            </select>
+          </div>
+          <div class="voice-settings-row">
+            <label for="ttsRateInput">Speech Rate</label>
+            <div class="voice-range-row">
+              <input type="range" id="ttsRateInput" min="0.8" max="1.2" step="0.05" value="1.05">
+              <span id="ttsRateValue">1.05x</span>
+            </div>
+          </div>
+          <div class="voice-settings-row">
+            <label for="fallbackVoiceSelect">Fallback Voice</label>
+            <select id="fallbackVoiceSelect">
+              <option value="">Loading voices...</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-section" style="margin-top: 24px; border-top: 1px solid var(--border-subtle); padding-top: 16px;">
         <h3>Location Context</h3>
         <p class="settings-hint">Used for accurate weather and local searches.</p>
         <div class="location-inputs">

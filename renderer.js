@@ -1,7 +1,7 @@
 /* ============================================
    OLANGA VOICE ASSISTANT - RENDERER
    Uses Vosk (WASM) for local Wake Word detection,
-   then raw PCM capture → WAV encoding → Gemini audio API
+   then raw PCM capture → WAV encoding → NVIDIA TTS or browser fallback
    ============================================ */
 
 // ---- State Machine ----
@@ -18,6 +18,11 @@ let apiKeyRotation = false;
 let currentKeyIndex = 0;
 let apiKey = ''; // current active key
 let nvidiaApiKey = ''; // NVIDIA API key for TTS
+let nvidiaVoiceName = localStorage.getItem('olanga_nvidia_voice') || '';
+let fallbackVoiceName = localStorage.getItem('olanga_fallback_voice') || '';
+let ttsRate = Number.parseFloat(localStorage.getItem('olanga_tts_rate') || '1.05');
+let nvidiaVoiceCatalog = [];
+let browserVoiceCatalog = [];
 let userCity = '';
 let userState = '';
 let userCountry = '';
@@ -90,6 +95,10 @@ const addKeyBtn = document.getElementById('addKeyBtn');
 const nvidiaSettingsKeyInput = document.getElementById('nvidiaSettingsKeyInput');
 const addNvidiaKeyBtn = document.getElementById('addNvidiaKeyBtn');
 const rotationToggle = document.getElementById('rotationToggle');
+const nvidiaVoiceSelect = document.getElementById('nvidiaVoiceSelect');
+const fallbackVoiceSelect = document.getElementById('fallbackVoiceSelect');
+const ttsRateInput = document.getElementById('ttsRateInput');
+const ttsRateValue = document.getElementById('ttsRateValue');
 const cityInput = document.getElementById('cityInput');
 const stateInput = document.getElementById('stateInput');
 const countryInput = document.getElementById('countryInput');
@@ -106,6 +115,7 @@ const timersContainer = document.getElementById('timersList');
 function init() {
   // Audio controls first (independent of API keys)
   initAudioControls();
+  initVoiceSettings();
 
   minimizeBtn.addEventListener('click', () => window.electronAPI.minimize());
   closeBtn.addEventListener('click', () => window.electronAPI.close());
@@ -155,6 +165,17 @@ function init() {
     if (newKeyInput && apiKey) {
       newKeyInput.value = apiKey;
     }
+    if (ttsRateInput) {
+      ttsRateInput.value = String(ttsRate);
+      updateTtsRateLabel(ttsRate);
+    }
+    if (nvidiaVoiceSelect && nvidiaVoiceName) {
+      nvidiaVoiceSelect.value = nvidiaVoiceName;
+    }
+    populateBrowserVoices();
+    if (fallbackVoiceSelect && fallbackVoiceName) {
+      fallbackVoiceSelect.value = fallbackVoiceName;
+    }
     // Load location context
     if (cityInput) cityInput.value = localStorage.getItem('olanga_city') || '';
     if (stateInput) stateInput.value = localStorage.getItem('olanga_state') || '';
@@ -181,6 +202,13 @@ function init() {
   cityInput.addEventListener('input', saveLocation);
   stateInput.addEventListener('input', saveLocation);
   countryInput.addEventListener('input', saveLocation);
+  if (ttsRateInput) {
+    ttsRateInput.addEventListener('input', (e) => {
+      ttsRate = Number.parseFloat(e.target.value);
+      localStorage.setItem('olanga_tts_rate', String(ttsRate));
+      updateTtsRateLabel(ttsRate);
+    });
+  }
 
   // Load keys and location
   let storedKeys = [];
@@ -197,6 +225,12 @@ function init() {
 
   nvidiaApiKey = localStorage.getItem('olanga_nvidia_key') || '';
   nvidiaSettingsKeyInput.value = nvidiaApiKey;
+  nvidiaVoiceName = localStorage.getItem('olanga_nvidia_voice') || nvidiaVoiceName;
+  fallbackVoiceName = localStorage.getItem('olanga_fallback_voice') || fallbackVoiceName;
+  if (ttsRateInput) {
+    ttsRateInput.value = String(ttsRate);
+    updateTtsRateLabel(ttsRate);
+  }
 
   const storedRotation = localStorage.getItem('olanga_key_rotation') === 'true';
   
@@ -310,6 +344,146 @@ function init() {
 
   orbCanvasCtx = orbCanvas.getContext('2d');
   startOrbAnimation();
+  refreshVoiceCatalog();
+}
+
+function initVoiceSettings() {
+  if (nvidiaVoiceSelect) {
+    nvidiaVoiceSelect.addEventListener('change', (e) => {
+      nvidiaVoiceName = e.target.value;
+      localStorage.setItem('olanga_nvidia_voice', nvidiaVoiceName);
+    });
+  }
+
+  if (fallbackVoiceSelect) {
+    fallbackVoiceSelect.addEventListener('change', (e) => {
+      fallbackVoiceName = e.target.value;
+      localStorage.setItem('olanga_fallback_voice', fallbackVoiceName);
+    });
+  }
+}
+
+function updateTtsRateLabel(value) {
+  if (ttsRateValue) {
+    ttsRateValue.textContent = `${Number.parseFloat(value).toFixed(2)}x`;
+  }
+}
+
+function parseVoiceCatalog(responseJson) {
+  const voices = [];
+  if (!responseJson || typeof responseJson !== 'object') {
+    return voices;
+  }
+
+  for (const [languageCode, entry] of Object.entries(responseJson)) {
+    const languageVoices = Array.isArray(entry?.voices) ? entry.voices : [];
+    for (const voiceName of languageVoices) {
+      voices.push({
+        languageCode,
+        voiceName,
+        label: `${voiceName} (${languageCode})`
+      });
+    }
+  }
+
+  return voices;
+}
+
+function populateVoiceSelect(selectElement, options, selectedValue, emptyLabel) {
+  if (!selectElement) return '';
+
+  selectElement.innerHTML = '';
+  if (options.length === 0) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = emptyLabel;
+    selectElement.appendChild(option);
+    selectElement.disabled = true;
+    return '';
+  }
+
+  selectElement.disabled = false;
+  for (const optionData of options) {
+    const option = document.createElement('option');
+    option.value = optionData.value;
+    option.textContent = optionData.label;
+    selectElement.appendChild(option);
+  }
+
+  if (selectedValue && options.some(option => option.value === selectedValue)) {
+    selectElement.value = selectedValue;
+  } else {
+    selectElement.value = options[0].value;
+  }
+
+  return selectElement.value;
+}
+
+function populateBrowserVoices() {
+  const voices = synthesis.getVoices();
+  browserVoiceCatalog = voices.map(voice => ({
+    value: voice.name,
+    label: `${voice.name}${voice.lang ? ` (${voice.lang})` : ''}`
+  }));
+
+  const selectedBrowserVoice = populateVoiceSelect(
+    fallbackVoiceSelect,
+    browserVoiceCatalog,
+    fallbackVoiceName,
+    'No browser voices available'
+  );
+  if (selectedBrowserVoice) {
+    fallbackVoiceName = selectedBrowserVoice;
+    localStorage.setItem('olanga_fallback_voice', fallbackVoiceName);
+  }
+}
+
+async function refreshVoiceCatalog() {
+  populateBrowserVoices();
+
+  const savedKey = nvidiaApiKey || localStorage.getItem('olanga_nvidia_key') || '';
+  if (!savedKey) {
+    populateVoiceSelect(nvidiaVoiceSelect, [], '', 'Add an NVIDIA API key first');
+    return;
+  }
+
+  try {
+    const response = await fetch('https://integrate.api.nvidia.com/v1/audio/list_voices', {
+      headers: {
+        Authorization: `Bearer ${savedKey}`
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Voice list error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    nvidiaVoiceCatalog = parseVoiceCatalog(data);
+    const voiceOptions = nvidiaVoiceCatalog.map(voice => ({
+      value: voice.voiceName,
+      label: voice.label
+    }));
+    const selectedVoice = nvidiaVoiceName || voiceOptions[0]?.value || '';
+    const resolvedVoice = populateVoiceSelect(nvidiaVoiceSelect, voiceOptions, selectedVoice, 'No NVIDIA voices found');
+    if (resolvedVoice) {
+      nvidiaVoiceName = resolvedVoice;
+      localStorage.setItem('olanga_nvidia_voice', nvidiaVoiceName);
+    }
+  } catch (error) {
+    console.warn('[Olanga] Failed to load NVIDIA voices:', error.message);
+    const fallbackOptions = [
+      { value: 'English-US.Male-1', label: 'English-US.Male-1 (en-US)' },
+      { value: 'English-US.Female-1', label: 'English-US.Female-1 (en-US)' },
+      { value: 'English-US.Male-2', label: 'English-US.Male-2 (en-US)' }
+    ];
+    const selectedVoice = nvidiaVoiceName || fallbackOptions[0].value;
+    const resolvedVoice = populateVoiceSelect(nvidiaVoiceSelect, fallbackOptions, selectedVoice, 'No NVIDIA voices found');
+    if (resolvedVoice) {
+      nvidiaVoiceName = resolvedVoice;
+      localStorage.setItem('olanga_nvidia_voice', nvidiaVoiceName);
+    }
+  }
 }
 
 // ---- API Key Setup ----
@@ -330,6 +504,7 @@ function handleSaveKey() {
     nvidiaApiKey = nKey;
     localStorage.setItem('olanga_nvidia_key', nKey);
     nvidiaSettingsKeyInput.value = nKey;
+    refreshVoiceCatalog();
   }
   showMainScreen();
 }
@@ -349,6 +524,7 @@ addNvidiaKeyBtn.addEventListener('click', () => {
   const nKey = nvidiaSettingsKeyInput.value.trim();
   nvidiaApiKey = nKey;
   localStorage.setItem('olanga_nvidia_key', nKey);
+  refreshVoiceCatalog();
 });
 
 function renderKeyList() {
@@ -1536,7 +1712,7 @@ function buildHistoryContext() {
 }
 
 // ============================================
-// PCM → WAV HELPER (needed for Gemini TTS output)
+// PCM → WAV HELPER (needed for TTS output)
 // ============================================
 
 function pcmToWav(pcmBytes, sampleRate, numChannels, bitDepth) {
@@ -1568,11 +1744,230 @@ function pcmToWav(pcmBytes, sampleRate, numChannels, bitDepth) {
   return new Blob([buffer], { type: 'audio/wav' });
 }
 
+function bytesToBase64(bytes) {
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
+function getSelectedNvidiaVoiceConfig() {
+  const selected = nvidiaVoiceCatalog.find(voice => voice.voiceName === nvidiaVoiceName);
+  if (selected) return selected;
+  return nvidiaVoiceCatalog[0] || {
+    languageCode: 'en-US',
+    voiceName: 'English-US.Male-1',
+    label: 'English-US.Male-1 (en-US)'
+  };
+}
+
+function getSelectedBrowserVoice() {
+  const voices = synthesis.getVoices();
+  if (!voices.length) return null;
+  return voices.find(voice => voice.name === fallbackVoiceName) || voices[0];
+}
+
+function playAudioBlob(blob, callback, doneLabel) {
+  const audioUrl = URL.createObjectURL(blob);
+  const audio = new Audio(audioUrl);
+  audio.volume = isMuted ? 0 : currentVolume;
+  currentTTSAudio = audio;
+  audio.addEventListener('ended', () => {
+    URL.revokeObjectURL(audioUrl);
+    currentTTSAudio = null;
+    if (doneLabel) {
+      console.log(doneLabel);
+    }
+    if (callback) callback();
+    else setState(State.IDLE);
+  });
+  audio.addEventListener('error', (error) => {
+    URL.revokeObjectURL(audioUrl);
+    currentTTSAudio = null;
+    console.error('[Olanga] TTS playback error:', error);
+    if (callback) callback();
+    else setState(State.IDLE);
+  });
+  audio.play().catch((error) => {
+    URL.revokeObjectURL(audioUrl);
+    currentTTSAudio = null;
+    console.error('[Olanga] TTS autoplay error:', error);
+    if (callback) callback();
+    else setState(State.IDLE);
+  });
+}
+
+async function createNvidiaTtsSession(voiceConfig) {
+  const response = await fetch('https://integrate.api.nvidia.com/v1/realtime/synthesis_sessions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${nvidiaApiKey}`
+    },
+    body: JSON.stringify({
+      object: 'realtime.synthesize_session',
+      input_text_synthesis: {
+        language_code: voiceConfig.languageCode || 'en-US',
+        voice_name: voiceConfig.voiceName
+      },
+      output_audio_params: {
+        sample_rate_hz: 22050,
+        num_channels: 1,
+        audio_format: 'LINEAR_PCM'
+      }
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`NVIDIA TTS session error: ${response.status} ${errorText}`);
+  }
+
+  return response.json();
+}
+
+function buildRealtimeUrls(sessionData) {
+  const urls = [];
+  const base = 'wss://integrate.api.nvidia.com/v1/realtime?intent=synthesize';
+  if (sessionData?.client_secret) {
+    urls.push(`${base}&client_secret=${encodeURIComponent(sessionData.client_secret)}`);
+  }
+  if (sessionData?.id) {
+    urls.push(`${base}&session_id=${encodeURIComponent(sessionData.id)}`);
+    urls.push(`${base}&conversation_id=${encodeURIComponent(sessionData.id)}`);
+  }
+  urls.push(base);
+  return urls;
+}
+
+function connectNvidiaTtsSocket(url, sessionData, text) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(url);
+    const audioChunks = [];
+    let completed = false;
+    let settled = false;
+
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      if (error) {
+        reject(error);
+        return;
+      }
+      try {
+        const totalLength = audioChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+        const merged = new Uint8Array(totalLength);
+        let offset = 0;
+        for (const chunk of audioChunks) {
+          merged.set(chunk, offset);
+          offset += chunk.length;
+        }
+        resolve(pcmToWav(merged, 22050, 1, 16));
+      } catch (mergeError) {
+        reject(mergeError);
+      }
+    };
+
+    const sendEvent = (type, payload = {}) => {
+      socket.send(JSON.stringify({
+        event_id: `event_${Math.random().toString(36).slice(2, 10)}`,
+        type,
+        ...payload
+      }));
+    };
+
+    socket.addEventListener('open', () => {
+      sendEvent('synthesize_session.update', {
+        session: {
+          input_text_synthesis: {
+            language_code: sessionData?.input_text_synthesis?.language_code || 'en-US',
+            voice_name: sessionData?.input_text_synthesis?.voice_name || 'English-US.Male-1'
+          },
+          output_audio_params: {
+            sample_rate_hz: 22050,
+            num_channels: 1,
+            audio_format: 'LINEAR_PCM'
+          }
+        }
+      });
+      sendEvent('input_text.append', { text });
+      sendEvent('input_text.commit');
+      sendEvent('input_text.done');
+    });
+
+    socket.addEventListener('message', (event) => {
+      let data;
+      try {
+        data = JSON.parse(event.data);
+      } catch (parseError) {
+        return;
+      }
+
+      if (data?.type === 'conversation.item.speech.data' && data.audio) {
+        audioChunks.push(Uint8Array.from(atob(data.audio), char => char.charCodeAt(0)));
+        if (data.is_last_chunk) {
+          completed = true;
+        }
+        return;
+      }
+
+      if (data?.type === 'conversation.item.speech.completed') {
+        completed = true;
+        socket.close();
+        return;
+      }
+
+      if (data?.type === 'error') {
+        finish(new Error(data?.error?.message || 'NVIDIA TTS error'));
+        socket.close();
+      }
+    });
+
+    socket.addEventListener('close', () => {
+      if (completed && audioChunks.length > 0) {
+        finish();
+      } else if (!settled) {
+        finish(new Error('NVIDIA TTS connection closed before audio was ready'));
+      }
+    });
+
+    socket.addEventListener('error', () => {
+      finish(new Error('NVIDIA TTS websocket error'));
+    });
+  });
+}
+
+async function speakWithNvidiaTts(text, callback) {
+  if (!nvidiaApiKey) {
+    throw new Error('NVIDIA API key is missing');
+  }
+
+  const voiceConfig = getSelectedNvidiaVoiceConfig();
+  const sessionData = await createNvidiaTtsSession(voiceConfig);
+  const urls = buildRealtimeUrls(sessionData);
+  let lastError = null;
+
+  for (const url of urls) {
+    try {
+      const wavBlob = await connectNvidiaTtsSocket(url, sessionData, text);
+      playAudioBlob(wavBlob, callback, '[Olanga] Done speaking (NVIDIA TTS)');
+      return true;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError || new Error('NVIDIA TTS failed');
+}
+
 // ============================================
 // FOLLOW-UP HELPERS
 // ============================================
 
-// Speaks a response then fires a callback once done (uses Gemini TTS with NVIDIA key gate)
+// Speaks a response then fires a callback once done
 async function speakResponseAndThen(text, callback) {
   if (isTtsMuted) {
     if (callback) callback();
@@ -1583,57 +1978,25 @@ async function speakResponseAndThen(text, callback) {
   setState(State.SPEAKING);
   synthesis.cancel();
 
-  const ttsKey = nvidiaApiKey || apiKey;
-  if (!ttsKey) {
-    fallbackTTSAndThen(text, callback);
-    return;
-  }
-
-  // Use Gemini TTS (the only available cloud TTS endpoint)
-  if (apiKey) {
+  if (nvidiaApiKey) {
     try {
-      const ttsResponse = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-tts:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text }] }],
-            generationConfig: {
-              responseModalities: ['audio'],
-              speechConfig: {
-                voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } }
-              }
-            }
-          })
-        }
-      );
-      if (!ttsResponse.ok) throw new Error(`Gemini TTS error: ${ttsResponse.status}`);
-      const data = await ttsResponse.json();
-      const b64Audio = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-      if (!b64Audio) throw new Error('No audio data');
-      const pcmBytes = Uint8Array.from(atob(b64Audio), c => c.charCodeAt(0));
-      const wavBlob = pcmToWav(pcmBytes, 24000, 1, 16);
-      const audioUrl = URL.createObjectURL(wavBlob);
-      const audio = new Audio(audioUrl);
-      audio.volume = isMuted ? 0 : currentVolume;
-      currentTTSAudio = audio;
-      audio.addEventListener('ended', () => { URL.revokeObjectURL(audioUrl); currentTTSAudio = null; if (callback) callback(); else setState(State.IDLE); });
-      audio.addEventListener('error', () => { URL.revokeObjectURL(audioUrl); currentTTSAudio = null; fallbackTTSAndThen(text, callback); });
-      audio.play();
+      await speakWithNvidiaTts(text, callback);
       return;
     } catch (err) {
-      console.warn('[Olanga] Gemini TTS failed, falling back:', err.message);
+      console.warn('[Olanga] NVIDIA TTS failed, falling back:', err.message);
     }
   }
+
   fallbackTTSAndThen(text, callback);
 }
 
 function fallbackTTSAndThen(text, callback) {
   const utterance = new SpeechSynthesisUtterance(text);
-  utterance.rate = 1.05;
+  utterance.rate = ttsRate;
   utterance.pitch = 1.0;
   utterance.volume = isMuted ? 0 : currentVolume;
+  const preferredVoice = getSelectedBrowserVoice();
+  if (preferredVoice) utterance.voice = preferredVoice;
   
   utterance.onend = () => { 
     if (callback) callback(); 
@@ -1716,61 +2079,25 @@ async function speakResponse(text) {
   setState(State.SPEAKING);
   synthesis.cancel();
 
-  const ttsKey = nvidiaApiKey || apiKey;
-  if (!ttsKey) {
-    console.warn('[Olanga] No API key set, falling back to browser TTS.');
-    fallbackTTS(text);
-    return;
-  }
-
-  if (apiKey) {
+  if (nvidiaApiKey) {
     try {
-      console.log('[Olanga] 🔊 Using Gemini TTS...');
-      const ttsResponse = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-tts:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text }] }],
-            generationConfig: {
-              responseModalities: ['audio'],
-              speechConfig: {
-                voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } }
-              }
-            }
-          })
-        }
-      );
-      if (!ttsResponse.ok) throw new Error(`Gemini TTS error: ${ttsResponse.status}`);
-      const data = await ttsResponse.json();
-      const b64Audio = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-      if (!b64Audio) throw new Error('No audio data');
-      const pcmBytes = Uint8Array.from(atob(b64Audio), c => c.charCodeAt(0));
-      const wavBlob = pcmToWav(pcmBytes, 24000, 1, 16);
-      const audioUrl = URL.createObjectURL(wavBlob);
-      const audio = new Audio(audioUrl);
-      audio.volume = isMuted ? 0 : currentVolume;
-      currentTTSAudio = audio;
-      audio.addEventListener('ended', () => { console.log('[Olanga] Done speaking'); URL.revokeObjectURL(audioUrl); currentTTSAudio = null; setState(State.IDLE); });
-      audio.addEventListener('error', (e) => { console.error('[Olanga] TTS playback error:', e); URL.revokeObjectURL(audioUrl); currentTTSAudio = null; fallbackTTS(text); });
-      audio.play();
+      await speakWithNvidiaTts(text, null);
       return;
     } catch (e) {
-      console.warn('[Olanga] Gemini TTS failed, falling back to browser TTS:', e.message);
+      console.warn('[Olanga] NVIDIA TTS failed, falling back to browser TTS:', e.message);
     }
   }
+
   fallbackTTS(text);
 }
 
 function fallbackTTS(text) {
   const utterance = new SpeechSynthesisUtterance(text);
-  utterance.rate = 1.05;
+  utterance.rate = ttsRate;
   utterance.pitch = 1.0;
   utterance.volume = isMuted ? 0 : currentVolume;
 
-  const voices = synthesis.getVoices();
-  const preferredVoice = voices[0];
+  const preferredVoice = getSelectedBrowserVoice();
   if (preferredVoice) utterance.voice = preferredVoice;
 
   utterance.onend = () => {
@@ -1808,6 +2135,7 @@ function enterFollowUpMode() {
 if (synthesis.onvoiceschanged !== undefined) {
   synthesis.onvoiceschanged = () => {
     console.log('[Olanga] Voices loaded:', synthesis.getVoices().length);
+    populateBrowserVoices();
   };
 }
 
@@ -3298,5 +3626,3 @@ async function executeTerminalCommand(command) {
 
 // Call initializer
 initTerminalCwd();
-
-
