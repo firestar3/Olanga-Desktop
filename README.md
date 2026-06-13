@@ -28,7 +28,7 @@ Assuming you have cloned this repository from GitHub:
 On your first launch, Olanga will ask for your API keys. You can access these anytime by clicking the **Settings (gear)** icon in the top right.
 
 1. **Gemini API Key**: Required for the core intelligence and vision model. Get one for free at [aistudio.google.com](https://aistudio.google.com/apikey).
-2. **NVIDIA API Key**: Required for NVIDIA-backed TTS voice synthesis. Get one at [build.nvidia.com](https://build.nvidia.com/). You can also pick the TTS voice and fallback voice from **Settings**.
+2. **NVIDIA API Key**: Required for NVIDIA-backed Magpie TTS voice synthesis. Get one at [build.nvidia.com](https://build.nvidia.com/). You can also pick the Magpie voice from **Settings**.
 3. **Location Context**: Add your City/State in the settings so Olanga can provide accurate real-time weather and local searches.
 
 ## Voice Commands & Capabilities

@@ -1,7 +1,7 @@
 /* ============================================
    OLANGA VOICE ASSISTANT - RENDERER
    Uses Vosk (WASM) for local Wake Word detection,
-   then raw PCM capture → WAV encoding → NVIDIA TTS or browser fallback
+   then raw PCM capture → WAV encoding → NVIDIA Magpie TTS
    ============================================ */
 
 // ---- State Machine ----
@@ -20,10 +20,8 @@ let apiKey = ''; // current active key
 let nvidiaApiKey = ''; // NVIDIA API key for TTS
 const defaultNvidiaVoiceName = 'Magpie-Multilingual.EN-US.Aria';
 let nvidiaVoiceName = localStorage.getItem('olanga_nvidia_voice') || defaultNvidiaVoiceName;
-let fallbackVoiceName = localStorage.getItem('olanga_fallback_voice') || '';
 let ttsRate = Number.parseFloat(localStorage.getItem('olanga_tts_rate') || '1.05');
 let nvidiaVoiceCatalog = [];
-let browserVoiceCatalog = [];
 let userCity = '';
 let userState = '';
 let userCountry = '';
@@ -97,7 +95,8 @@ const nvidiaSettingsKeyInput = document.getElementById('nvidiaSettingsKeyInput')
 const addNvidiaKeyBtn = document.getElementById('addNvidiaKeyBtn');
 const rotationToggle = document.getElementById('rotationToggle');
 const nvidiaVoiceSelect = document.getElementById('nvidiaVoiceSelect');
-const fallbackVoiceSelect = document.getElementById('fallbackVoiceSelect');
+const customVoiceNameInput = document.getElementById('customVoiceNameInput');
+const refreshVoiceListBtn = document.getElementById('refreshVoiceListBtn');
 const ttsRateInput = document.getElementById('ttsRateInput');
 const ttsRateValue = document.getElementById('ttsRateValue');
 const cityInput = document.getElementById('cityInput');
@@ -173,9 +172,8 @@ function init() {
     if (nvidiaVoiceSelect && nvidiaVoiceName) {
       nvidiaVoiceSelect.value = nvidiaVoiceName;
     }
-    populateBrowserVoices();
-    if (fallbackVoiceSelect && fallbackVoiceName) {
-      fallbackVoiceSelect.value = fallbackVoiceName;
+    if (customVoiceNameInput) {
+      customVoiceNameInput.value = nvidiaVoiceName || defaultNvidiaVoiceName;
     }
     // Load location context
     if (cityInput) cityInput.value = localStorage.getItem('olanga_city') || '';
@@ -227,7 +225,9 @@ function init() {
   nvidiaApiKey = localStorage.getItem('olanga_nvidia_key') || '';
   nvidiaSettingsKeyInput.value = nvidiaApiKey;
   nvidiaVoiceName = localStorage.getItem('olanga_nvidia_voice') || nvidiaVoiceName;
-  fallbackVoiceName = localStorage.getItem('olanga_fallback_voice') || fallbackVoiceName;
+  if (customVoiceNameInput) {
+    customVoiceNameInput.value = nvidiaVoiceName || defaultNvidiaVoiceName;
+  }
   if (ttsRateInput) {
     ttsRateInput.value = String(ttsRate);
     updateTtsRateLabel(ttsRate);
@@ -351,16 +351,37 @@ function init() {
 function initVoiceSettings() {
   if (nvidiaVoiceSelect) {
     nvidiaVoiceSelect.addEventListener('change', (e) => {
-      nvidiaVoiceName = e.target.value;
+      const nextVoice = e.target.value.trim() || defaultNvidiaVoiceName;
+      nvidiaVoiceName = nextVoice;
       localStorage.setItem('olanga_nvidia_voice', nvidiaVoiceName);
+      if (customVoiceNameInput) {
+        customVoiceNameInput.value = nvidiaVoiceName;
+      }
     });
   }
 
-  if (fallbackVoiceSelect) {
-    fallbackVoiceSelect.addEventListener('change', (e) => {
-      fallbackVoiceName = e.target.value;
-      localStorage.setItem('olanga_fallback_voice', fallbackVoiceName);
+  if (customVoiceNameInput) {
+    customVoiceNameInput.addEventListener('input', (e) => {
+      const nextVoice = e.target.value.trim() || defaultNvidiaVoiceName;
+      nvidiaVoiceName = nextVoice;
+      localStorage.setItem('olanga_nvidia_voice', nvidiaVoiceName);
+      if (nvidiaVoiceSelect) {
+        const hasMatch = Array.from(nvidiaVoiceSelect.options).some(option => option.value === nvidiaVoiceName);
+        if (hasMatch) {
+          nvidiaVoiceSelect.value = nvidiaVoiceName;
+        } else {
+          const customOption = document.createElement('option');
+          customOption.value = nvidiaVoiceName;
+          customOption.textContent = `${nvidiaVoiceName} (custom)`;
+          nvidiaVoiceSelect.insertBefore(customOption, nvidiaVoiceSelect.firstChild);
+          nvidiaVoiceSelect.value = nvidiaVoiceName;
+        }
+      }
     });
+  }
+
+  if (refreshVoiceListBtn) {
+    refreshVoiceListBtn.addEventListener('click', refreshVoiceCatalog);
   }
 }
 
@@ -378,7 +399,9 @@ function parseVoiceCatalog(responseJson) {
 
   for (const [languageCode, entry] of Object.entries(responseJson)) {
     const languageVoices = Array.isArray(entry?.voices) ? entry.voices : [];
-    for (const voiceName of languageVoices) {
+    for (const voiceEntry of languageVoices) {
+      const voiceName = typeof voiceEntry === 'string' ? voiceEntry : (voiceEntry?.voice_name || voiceEntry?.name || voiceEntry?.voiceName || '');
+      if (!voiceName) continue;
       voices.push({
         languageCode,
         voiceName,
@@ -420,31 +443,22 @@ function populateVoiceSelect(selectElement, options, selectedValue, emptyLabel) 
   return selectElement.value;
 }
 
-function populateBrowserVoices() {
-  const voices = synthesis.getVoices();
-  browserVoiceCatalog = voices.map(voice => ({
-    value: voice.name,
-    label: `${voice.name}${voice.lang ? ` (${voice.lang})` : ''}`
-  }));
-
-  const selectedBrowserVoice = populateVoiceSelect(
-    fallbackVoiceSelect,
-    browserVoiceCatalog,
-    fallbackVoiceName,
-    'No browser voices available'
-  );
-  if (selectedBrowserVoice) {
-    fallbackVoiceName = selectedBrowserVoice;
-    localStorage.setItem('olanga_fallback_voice', fallbackVoiceName);
-  }
-}
-
 async function refreshVoiceCatalog() {
-  populateBrowserVoices();
-
   const savedKey = nvidiaApiKey || localStorage.getItem('olanga_nvidia_key') || '';
   if (!savedKey) {
-    populateVoiceSelect(nvidiaVoiceSelect, [], '', 'Add an NVIDIA API key first');
+    const defaultOptions = [
+      { value: defaultNvidiaVoiceName, label: `${defaultNvidiaVoiceName} (default)` },
+      { value: 'Magpie-Multilingual.ES-US.Diego', label: 'Magpie-Multilingual.ES-US.Diego (es-US)' },
+      { value: 'Magpie-Multilingual.ES-US.Isabela', label: 'Magpie-Multilingual.ES-US.Isabela (es-US)' }
+    ];
+    const selectedVoice = nvidiaVoiceName || defaultNvidiaVoiceName;
+    const selectedOption = defaultOptions.some(option => option.value === selectedVoice)
+      ? selectedVoice
+      : defaultOptions[0].value;
+    populateVoiceSelect(nvidiaVoiceSelect, defaultOptions, selectedOption, 'No NVIDIA voices found');
+    if (customVoiceNameInput) {
+      customVoiceNameInput.value = selectedVoice;
+    }
     return;
   }
 
@@ -461,29 +475,43 @@ async function refreshVoiceCatalog() {
 
     const data = await response.json();
     nvidiaVoiceCatalog = parseVoiceCatalog(data);
-    const voiceOptions = nvidiaVoiceCatalog.map(voice => ({
+    let voiceOptions = nvidiaVoiceCatalog.map(voice => ({
       value: voice.voiceName,
       label: voice.label
     }));
     const selectedVoice = nvidiaVoiceName || defaultNvidiaVoiceName || voiceOptions[0]?.value || '';
+    if (selectedVoice && !voiceOptions.some(option => option.value === selectedVoice)) {
+      voiceOptions = [
+        { value: selectedVoice, label: `${selectedVoice} (custom)` },
+        ...voiceOptions
+      ];
+    }
     const resolvedVoice = populateVoiceSelect(nvidiaVoiceSelect, voiceOptions, selectedVoice, 'No NVIDIA voices found');
     if (resolvedVoice) {
       nvidiaVoiceName = resolvedVoice;
       localStorage.setItem('olanga_nvidia_voice', nvidiaVoiceName);
+      if (customVoiceNameInput) {
+        customVoiceNameInput.value = nvidiaVoiceName;
+      }
     }
   } catch (error) {
     console.warn('[Olanga] Failed to load NVIDIA voices:', error.message);
     const fallbackOptions = [
       { value: 'Magpie-Multilingual.EN-US.Aria', label: 'Magpie-Multilingual.EN-US.Aria (en-US)' },
-      { value: 'English-US.Male-1', label: 'English-US.Male-1 (en-US)' },
-      { value: 'English-US.Female-1', label: 'English-US.Female-1 (en-US)' },
-      { value: 'English-US.Male-2', label: 'English-US.Male-2 (en-US)' }
+      { value: 'Magpie-Multilingual.ES-US.Diego', label: 'Magpie-Multilingual.ES-US.Diego (es-US)' },
+      { value: 'Magpie-Multilingual.ES-US.Isabela', label: 'Magpie-Multilingual.ES-US.Isabela (es-US)' }
     ];
     const selectedVoice = nvidiaVoiceName || defaultNvidiaVoiceName || fallbackOptions[0].value;
-    const resolvedVoice = populateVoiceSelect(nvidiaVoiceSelect, fallbackOptions, selectedVoice, 'No NVIDIA voices found');
+    const voiceOptions = fallbackOptions.some(option => option.value === selectedVoice)
+      ? fallbackOptions
+      : [{ value: selectedVoice, label: `${selectedVoice} (custom)` }, ...fallbackOptions];
+    const resolvedVoice = populateVoiceSelect(nvidiaVoiceSelect, voiceOptions, selectedVoice, 'No NVIDIA voices found');
     if (resolvedVoice) {
       nvidiaVoiceName = resolvedVoice;
       localStorage.setItem('olanga_nvidia_voice', nvidiaVoiceName);
+      if (customVoiceNameInput) {
+        customVoiceNameInput.value = nvidiaVoiceName;
+      }
     }
   }
 }
@@ -1759,17 +1787,18 @@ function bytesToBase64(bytes) {
 function getSelectedNvidiaVoiceConfig() {
   const selected = nvidiaVoiceCatalog.find(voice => voice.voiceName === nvidiaVoiceName);
   if (selected) return selected;
-  return nvidiaVoiceCatalog[0] || {
-    languageCode: 'en-US',
-    voiceName: 'English-US.Male-1',
-    label: 'English-US.Male-1 (en-US)'
+  return {
+    languageCode: inferVoiceLanguageCode(nvidiaVoiceName),
+    voiceName: nvidiaVoiceName || defaultNvidiaVoiceName,
+    label: nvidiaVoiceName || defaultNvidiaVoiceName
   };
 }
 
-function getSelectedBrowserVoice() {
-  const voices = synthesis.getVoices();
-  if (!voices.length) return null;
-  return voices.find(voice => voice.name === fallbackVoiceName) || voices[0];
+function inferVoiceLanguageCode(voiceName) {
+  if (!voiceName) return 'en-US';
+  const normalized = voiceName.toLowerCase();
+  const languageMatch = normalized.match(/(?:magpie-multilingual\.)?([a-z]{2}-[a-z]{2})\./i) || normalized.match(/([a-z]{2}-[a-z]{2})/i);
+  return languageMatch ? languageMatch[1] : 'en-US';
 }
 
 function playAudioBlob(blob, callback, doneLabel) {
@@ -1985,32 +2014,17 @@ async function speakResponseAndThen(text, callback) {
       await speakWithNvidiaTts(text, callback);
       return;
     } catch (err) {
-      console.warn('[Olanga] NVIDIA TTS failed, falling back:', err.message);
+      console.error('[Olanga] NVIDIA TTS failed:', err.message);
+      showError(`NVIDIA TTS failed: ${err.message}`);
+      if (callback) callback();
+      else setState(State.IDLE);
+      return;
     }
   }
 
-  fallbackTTSAndThen(text, callback);
-}
-
-function fallbackTTSAndThen(text, callback) {
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.rate = ttsRate;
-  utterance.pitch = 1.0;
-  utterance.volume = isMuted ? 0 : currentVolume;
-  const preferredVoice = getSelectedBrowserVoice();
-  if (preferredVoice) utterance.voice = preferredVoice;
-  
-  utterance.onend = () => { 
-    if (callback) callback(); 
-    else setState(State.IDLE);
-  };
-  utterance.onerror = (e) => { 
-    console.error('[Olanga] Fallback TTS error:', e);
-    if (callback) callback(); 
-    else setState(State.IDLE);
-  };
-
-  synthesis.speak(utterance);
+  showError('Please add an NVIDIA API key to use Magpie TTS.');
+  if (callback) callback();
+  else setState(State.IDLE);
 }
 
 // Opens a 5-second listening window specifically triggered by an AI [FOLLOW_UP] command
@@ -2086,33 +2100,14 @@ async function speakResponse(text) {
       await speakWithNvidiaTts(text, null);
       return;
     } catch (e) {
-      console.warn('[Olanga] NVIDIA TTS failed, falling back to browser TTS:', e.message);
+      console.error('[Olanga] NVIDIA TTS failed:', e.message);
+      showError(`NVIDIA TTS failed: ${e.message}`);
+      setState(State.IDLE);
+      return;
     }
   }
-
-  fallbackTTS(text);
-}
-
-function fallbackTTS(text) {
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.rate = ttsRate;
-  utterance.pitch = 1.0;
-  utterance.volume = isMuted ? 0 : currentVolume;
-
-  const preferredVoice = getSelectedBrowserVoice();
-  if (preferredVoice) utterance.voice = preferredVoice;
-
-  utterance.onend = () => {
-    console.log('[Olanga] Done speaking (fallback TTS)');
-    setState(State.IDLE);
-  };
-
-  utterance.onerror = (e) => {
-    console.error('[Olanga] Fallback TTS error:', e);
-    setState(State.IDLE);
-  };
-
-  synthesis.speak(utterance);
+  showError('Please add an NVIDIA API key to use Magpie TTS.');
+  setState(State.IDLE);
 }
 
 function enterFollowUpMode() {
@@ -2137,7 +2132,6 @@ function enterFollowUpMode() {
 if (synthesis.onvoiceschanged !== undefined) {
   synthesis.onvoiceschanged = () => {
     console.log('[Olanga] Voices loaded:', synthesis.getVoices().length);
-    populateBrowserVoices();
   };
 }
 

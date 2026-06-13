@@ -323,26 +323,25 @@
 
       <div class="settings-section" style="margin-top: 24px; border-top: 1px solid var(--border-subtle); padding-top: 16px;">
         <h3>Voice Settings</h3>
-        <p class="settings-hint">Pick the voice person for NVIDIA TTS and adjust fallback speech.</p>
+        <p class="settings-hint">Pick a Magpie voice person or type an exact voice name.</p>
         <div class="voice-settings-grid">
-          <div class="voice-settings-row">
+          <div class="voice-settings-row full-width">
             <label for="nvidiaVoiceSelect">Voice Person</label>
             <select id="nvidiaVoiceSelect">
               <option value="">Loading voices...</option>
             </select>
           </div>
-          <div class="voice-settings-row">
+          <div class="voice-settings-row full-width">
+            <label for="customVoiceNameInput">Custom Voice Name</label>
+            <input type="text" id="customVoiceNameInput" placeholder="Magpie-Multilingual.EN-US.Aria" autocomplete="off">
+          </div>
+          <div class="voice-settings-row full-width">
             <label for="ttsRateInput">Speech Rate</label>
             <div class="voice-range-row">
               <input type="range" id="ttsRateInput" min="0.8" max="1.2" step="0.05" value="1.05">
               <span id="ttsRateValue">1.05x</span>
+              <button type="button" class="voice-refresh-btn" id="refreshVoiceListBtn">Refresh Voices</button>
             </div>
-          </div>
-          <div class="voice-settings-row">
-            <label for="fallbackVoiceSelect">Fallback Voice Person</label>
-            <select id="fallbackVoiceSelect">
-              <option value="">Loading voices...</option>
-            </select>
           </div>
         </div>
       </div>
