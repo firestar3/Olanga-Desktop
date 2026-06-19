@@ -18,10 +18,9 @@ let apiKeyRotation = false;
 let currentKeyIndex = 0;
 let apiKey = ''; // current active key
 let nvidiaApiKey = ''; // NVIDIA API key for TTS
-const defaultNvidiaFunctionId = 'ddacc747-1269-4fab-bfd9-8f593dead106';
 const defaultNvidiaVoiceName = 'Magpie-Multilingual.EN-US.Aria';
 let nvidiaVoiceName = localStorage.getItem('olanga_nvidia_voice') || defaultNvidiaVoiceName;
-let nvidiaFunctionId = localStorage.getItem('olanga_nvidia_function_id') || defaultNvidiaFunctionId;
+let nvidiaFunctionId = localStorage.getItem('olanga_nvidia_function_id') || '';
 let ttsRate = Number.parseFloat(localStorage.getItem('olanga_tts_rate') || '1.05');
 let nvidiaVoiceCatalog = [];
 let userCity = '';
@@ -94,6 +93,7 @@ const keyListContainer = document.getElementById('keyListContainer');
 const newKeyInput = document.getElementById('newKeyInput');
 const addKeyBtn = document.getElementById('addKeyBtn');
 const nvidiaSettingsKeyInput = document.getElementById('nvidiaSettingsKeyInput');
+const nvidiaFunctionIdInput = document.getElementById('nvidiaFunctionIdInput');
 const addNvidiaKeyBtn = document.getElementById('addNvidiaKeyBtn');
 const rotationToggle = document.getElementById('rotationToggle');
 const nvidiaVoiceSelect = document.getElementById('nvidiaVoiceSelect');
@@ -163,6 +163,9 @@ function init() {
     if (savedNvidiaKey && nvidiaSettingsKeyInput) {
       nvidiaSettingsKeyInput.value = savedNvidiaKey;
     }
+    if (nvidiaFunctionIdInput) {
+      nvidiaFunctionIdInput.value = localStorage.getItem('olanga_nvidia_function_id') || nvidiaFunctionId;
+    }
     // Load active Gemini key into newKeyInput for viewing/editing
     if (newKeyInput && apiKey) {
       newKeyInput.value = apiKey;
@@ -229,6 +232,10 @@ function init() {
 
   nvidiaApiKey = localStorage.getItem('olanga_nvidia_key') || '';
   nvidiaSettingsKeyInput.value = nvidiaApiKey;
+  nvidiaFunctionId = localStorage.getItem('olanga_nvidia_function_id') || nvidiaFunctionId;
+  if (nvidiaFunctionIdInput) {
+    nvidiaFunctionIdInput.value = nvidiaFunctionId;
+  }
   nvidiaVoiceName = localStorage.getItem('olanga_nvidia_voice') || nvidiaVoiceName;
   if (customVoiceNameInput) {
     customVoiceNameInput.value = nvidiaVoiceName || defaultNvidiaVoiceName;
@@ -682,8 +689,11 @@ function handleAddKeyFromSettings() {
 
 addNvidiaKeyBtn.addEventListener('click', () => {
   const nKey = nvidiaSettingsKeyInput.value.trim();
+  const functionId = nvidiaFunctionIdInput ? nvidiaFunctionIdInput.value.trim() : '';
   nvidiaApiKey = nKey;
+  nvidiaFunctionId = functionId;
   localStorage.setItem('olanga_nvidia_key', nKey);
+  localStorage.setItem('olanga_nvidia_function_id', functionId);
   refreshVoiceCatalog();
 });
 

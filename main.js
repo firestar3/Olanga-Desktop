@@ -341,7 +341,11 @@ function grpcUnaryCall({ pathName, apiKey, functionId, requestBytes }) {
     request.on('end', () => {
       const grpcStatus = String(responseTrailers['grpc-status'] || responseHeaders['grpc-status'] || '0');
       if (grpcStatus !== '0') {
-        const grpcMessage = Buffer.from(String(responseTrailers['grpc-message'] || responseHeaders['grpc-message'] || 'gRPC request failed')).toString('utf8');
+        const grpcMessage = decodeURIComponent(String(responseTrailers['grpc-message'] || responseHeaders['grpc-message'] || 'gRPC request failed'));
+        if (grpcStatus === '5' && /function .*not found for account/i.test(grpcMessage)) {
+          finish(new Error('NVIDIA Function ID is not available for this account. Paste the account-specific function-id from the chatterbox-multilingual-tts API snippet in Settings.'));
+          return;
+        }
         finish(new Error(`gRPC ${grpcStatus}: ${grpcMessage}`));
         return;
       }
@@ -356,6 +360,10 @@ function grpcUnaryCall({ pathName, apiKey, functionId, requestBytes }) {
 }
 
 async function fetchNvidiaTtsConfig(apiKey, functionId) {
+  if (!functionId) {
+    throw new Error('Missing NVIDIA Function ID. Paste the function-id from the chatterbox-multilingual-tts API snippet in Settings.');
+  }
+
   const responseBuffer = await grpcUnaryCall({
     pathName: GRPC_TTS_CONFIG_PATH,
     apiKey,
@@ -367,6 +375,10 @@ async function fetchNvidiaTtsConfig(apiKey, functionId) {
 }
 
 async function synthesizeNvidiaTts(apiKey, functionId, requestBytes) {
+  if (!functionId) {
+    throw new Error('Missing NVIDIA Function ID. Paste the function-id from the chatterbox-multilingual-tts API snippet in Settings.');
+  }
+
   const responseBuffer = await grpcUnaryCall({
     pathName: GRPC_TTS_SYNTHESIZE_PATH,
     apiKey,
