@@ -94,6 +94,7 @@ const newKeyInput = document.getElementById('newKeyInput');
 const addKeyBtn = document.getElementById('addKeyBtn');
 const nvidiaSettingsKeyInput = document.getElementById('nvidiaSettingsKeyInput');
 const nvidiaFunctionIdInput = document.getElementById('nvidiaFunctionIdInput');
+const nvidiaFunctionIdSetupInput = document.getElementById('nvidiaFunctionIdSetupInput');
 const addNvidiaKeyBtn = document.getElementById('addNvidiaKeyBtn');
 const rotationToggle = document.getElementById('rotationToggle');
 const nvidiaVoiceSelect = document.getElementById('nvidiaVoiceSelect');
@@ -141,6 +142,9 @@ function init() {
   }
   if (savedNvidiaKey) {
     nvidiaKeyInput.value = savedNvidiaKey;
+  }
+  if (nvidiaFunctionIdSetupInput) {
+    nvidiaFunctionIdSetupInput.value = localStorage.getItem('olanga_nvidia_function_id') || '';
   }
 
   saveKeyBtn.addEventListener('click', handleSaveKey);
@@ -235,6 +239,9 @@ function init() {
   nvidiaFunctionId = localStorage.getItem('olanga_nvidia_function_id') || nvidiaFunctionId;
   if (nvidiaFunctionIdInput) {
     nvidiaFunctionIdInput.value = nvidiaFunctionId;
+  }
+  if (nvidiaFunctionIdSetupInput) {
+    nvidiaFunctionIdSetupInput.value = nvidiaFunctionId;
   }
   nvidiaVoiceName = localStorage.getItem('olanga_nvidia_voice') || nvidiaVoiceName;
   if (customVoiceNameInput) {
@@ -657,6 +664,7 @@ function parseTtsResponse(buffer) {
 function handleSaveKey() {
   const key = apiKeyInput.value.trim();
   const nKey = nvidiaKeyInput.value.trim();
+  const setupFunctionId = nvidiaFunctionIdSetupInput ? nvidiaFunctionIdSetupInput.value.trim() : '';
   if (!key) {
     showError('Please enter your Gemini API key');
     return;
@@ -671,6 +679,13 @@ function handleSaveKey() {
     nvidiaApiKey = nKey;
     localStorage.setItem('olanga_nvidia_key', nKey);
     nvidiaSettingsKeyInput.value = nKey;
+    if (setupFunctionId) {
+      nvidiaFunctionId = setupFunctionId;
+      localStorage.setItem('olanga_nvidia_function_id', setupFunctionId);
+      if (nvidiaFunctionIdInput) {
+        nvidiaFunctionIdInput.value = setupFunctionId;
+      }
+    }
     refreshVoiceCatalog();
   }
   showMainScreen();
