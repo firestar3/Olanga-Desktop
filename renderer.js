@@ -253,12 +253,17 @@ function init() {
   }
 
   const storedRotation = localStorage.getItem('olanga_key_rotation') === 'true';
+  const hasNvidiaSetup = Boolean(nvidiaApiKey && nvidiaFunctionId);
   
   if (storedKeys.length > 0) {
     apiKeys = storedKeys;
     apiKeyRotation = storedRotation;
     apiKey = apiKeys[0];
-    showMainScreen();
+    if (hasNvidiaSetup || !nvidiaApiKey) {
+      showMainScreen();
+    } else {
+      showError('Paste the NVIDIA Function ID from the chatterbox-multilingual-tts API snippet, then save NVIDIA settings.');
+    }
   } else {
     // Legacy fallback
     const legacyKey = localStorage.getItem('olanga_api_key');
@@ -266,7 +271,11 @@ function init() {
       apiKeys = [legacyKey];
       apiKey = legacyKey;
       localStorage.setItem('olanga_api_keys', JSON.stringify(apiKeys));
-      showMainScreen();
+      if (hasNvidiaSetup || !nvidiaApiKey) {
+        showMainScreen();
+      } else {
+        showError('Paste the NVIDIA Function ID from the chatterbox-multilingual-tts API snippet, then save NVIDIA settings.');
+      }
     }
   }
 
@@ -676,15 +685,17 @@ function handleSaveKey() {
   localStorage.setItem('olanga_api_keys', JSON.stringify(apiKeys));
   
   if (nKey) {
+    if (!setupFunctionId) {
+      showError('Paste the NVIDIA Function ID from the chatterbox-multilingual-tts API snippet.');
+      return;
+    }
     nvidiaApiKey = nKey;
     localStorage.setItem('olanga_nvidia_key', nKey);
     nvidiaSettingsKeyInput.value = nKey;
-    if (setupFunctionId) {
-      nvidiaFunctionId = setupFunctionId;
-      localStorage.setItem('olanga_nvidia_function_id', setupFunctionId);
-      if (nvidiaFunctionIdInput) {
-        nvidiaFunctionIdInput.value = setupFunctionId;
-      }
+    nvidiaFunctionId = setupFunctionId;
+    localStorage.setItem('olanga_nvidia_function_id', setupFunctionId);
+    if (nvidiaFunctionIdInput) {
+      nvidiaFunctionIdInput.value = setupFunctionId;
     }
     refreshVoiceCatalog();
   }
