@@ -403,8 +403,10 @@ function parseVoiceCatalog(responseJson) {
       ? responseJson.model_config[0]
       : null;
 
-  const parameters = modelConfig?.parameters || {};
-  const baseVoiceName = parameters.voiceName || defaultNvidiaVoiceName;
+  const parameters = Array.isArray(modelConfig?.parameters)
+    ? Object.fromEntries(modelConfig.parameters.map(entry => [entry.key, entry.value]))
+    : modelConfig?.parameters || {};
+  const baseVoiceName = parameters.voiceName || modelConfig?.model_name || defaultNvidiaVoiceName;
   const rawSubvoices = parameters.subvoices || parameters.subVoices || '';
   const subvoices = Array.isArray(rawSubvoices)
     ? rawSubvoices
@@ -487,19 +489,10 @@ async function refreshVoiceCatalog() {
   }
 
   try {
-    const response = await fetch('https://integrate.api.nvidia.com/v2/riva/tts/config', {
-      headers: {
-        Authorization: `Bearer ${savedKey}`,
-        'function-id': nvidiaFunctionId,
-        'NVCF-Function-Id': nvidiaFunctionId
-      }
+    const data = await window.electronAPI.nvidiaTtsConfig({
+      apiKey: savedKey,
+      functionId: nvidiaFunctionId
     });
-
-    if (!response.ok) {
-      throw new Error(`Voice list error: ${response.status}`);
-    }
-
-    const data = await response.json();
     nvidiaVoiceCatalog = parseVoiceCatalog(data);
     let voiceOptions = nvidiaVoiceCatalog.map(voice => ({
       value: voice.voiceName,
@@ -2025,35 +2018,15 @@ async function speakWithNvidiaTts(text, callback) {
   }
 
   const voiceConfig = getSelectedNvidiaVoiceConfig();
-  const requestBody = JSON.stringify({
+  const result = await window.electronAPI.nvidiaTtsSynthesize({
+    apiKey: nvidiaApiKey,
+    functionId: nvidiaFunctionId,
     text,
     voiceName: voiceConfig.voiceName || defaultNvidiaVoiceName,
-    encoding: 'LINEAR_PCM',
-    sampleRateHz: 44100,
     languageCode: voiceConfig.languageCode || 'en-US'
   });
-
-  const response = await fetch('https://integrate.api.nvidia.com/v2/riva/tts/synthesize', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${nvidiaApiKey}`,
-      'Content-Type': 'application/json',
-      Accept: 'text/plain, application/json, audio/wav',
-      'function-id': nvidiaFunctionId,
-      'NVCF-Function-Id': nvidiaFunctionId
-    },
-    body: requestBody
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`NVIDIA TTS error: ${response.status} ${errorText}`.trim());
-  }
-
-  const contentType = response.headers.get('content-type') || '';
-  const audioBlob = contentType.includes('audio/')
-    ? await response.blob()
-    : pcmToWav(parseMagpieAudioText(await response.text()), 44100, 1, 16);
+  const audioBytes = decodeBase64ToUint8Array(result.audioBase64 || '');
+  const audioBlob = pcmToWav(audioBytes, 44100, 1, 16);
   playAudioBlob(audioBlob, callback, '[Olanga] Done speaking (Magpie TTS)');
   return true;
 }

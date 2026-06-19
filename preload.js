@@ -8,5 +8,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   mediaControl: (cmd) => ipcRenderer.send('media-control', cmd),
   openApp: (appName) => ipcRenderer.send('open-app', appName),
   requestScreenshot: () => ipcRenderer.invoke('request-screenshot'),
-  executeCommand: (payload) => ipcRenderer.invoke('execute-command', payload)
+  executeCommand: (payload) => ipcRenderer.invoke('execute-command', payload),
+  nvidiaTtsConfig: (payload) => ipcRenderer.invoke('nvidia-tts-config', payload),
+  nvidiaTtsSynthesize: (payload) => ipcRenderer.invoke('nvidia-tts-synthesize', payload)
 });
