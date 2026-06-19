@@ -18,8 +18,10 @@ let apiKeyRotation = false;
 let currentKeyIndex = 0;
 let apiKey = ''; // current active key
 let nvidiaApiKey = ''; // NVIDIA API key for TTS
+const defaultNvidiaFunctionId = 'ddacc747-1269-4fab-bfd9-8f593dead106';
 const defaultNvidiaVoiceName = 'Magpie-Multilingual.EN-US.Aria';
 let nvidiaVoiceName = localStorage.getItem('olanga_nvidia_voice') || defaultNvidiaVoiceName;
+let nvidiaFunctionId = localStorage.getItem('olanga_nvidia_function_id') || defaultNvidiaFunctionId;
 let ttsRate = Number.parseFloat(localStorage.getItem('olanga_tts_rate') || '1.05');
 let nvidiaVoiceCatalog = [];
 let userCity = '';
@@ -487,7 +489,9 @@ async function refreshVoiceCatalog() {
   try {
     const response = await fetch('https://integrate.api.nvidia.com/v2/riva/tts/config', {
       headers: {
-        Authorization: `Bearer ${savedKey}`
+        Authorization: `Bearer ${savedKey}`,
+        'function-id': nvidiaFunctionId,
+        'NVCF-Function-Id': nvidiaFunctionId
       }
     });
 
@@ -1917,6 +1921,56 @@ function bytesToBase64(bytes) {
   return btoa(binary);
 }
 
+function decodeBase64ToUint8Array(base64Text) {
+  const binary = atob(base64Text);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function parseMagpieAudioText(payloadText) {
+  const trimmed = payloadText.trim();
+  if (!trimmed) {
+    throw new Error('Empty NVIDIA TTS response');
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (typeof parsed?.audio === 'string') {
+      return decodeBase64ToUint8Array(parsed.audio);
+    }
+    if (typeof parsed?.content === 'string') {
+      return decodeBase64ToUint8Array(parsed.content);
+    }
+  } catch (error) {
+    // Streamed audio is often plain text rather than JSON.
+  }
+
+  const chunks = trimmed
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .map((line) => line.startsWith('data:') ? line.slice(5).trim() : line)
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        const maybeJson = JSON.parse(line);
+        return typeof maybeJson?.audio === 'string' ? maybeJson.audio : line;
+      } catch (error) {
+        return line;
+      }
+    })
+    .filter(Boolean);
+
+  if (chunks.length === 0) {
+    return decodeBase64ToUint8Array(trimmed);
+  }
+
+  return concatUint8Arrays(chunks.map(decodeBase64ToUint8Array));
+}
+
 function getSelectedNvidiaVoiceConfig() {
   const selected = nvidiaVoiceCatalog.find(voice => voice.voiceName === nvidiaVoiceName);
   if (selected) return selected;
@@ -1971,13 +2025,22 @@ async function speakWithNvidiaTts(text, callback) {
   }
 
   const voiceConfig = getSelectedNvidiaVoiceConfig();
-  const requestBody = buildTtsRequestBody(text, voiceConfig);
+  const requestBody = JSON.stringify({
+    text,
+    voiceName: voiceConfig.voiceName || defaultNvidiaVoiceName,
+    encoding: 'LINEAR_PCM',
+    sampleRateHz: 44100,
+    languageCode: voiceConfig.languageCode || 'en-US'
+  });
+
   const response = await fetch('https://integrate.api.nvidia.com/v2/riva/tts/synthesize', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${nvidiaApiKey}`,
-      'Content-Type': 'application/x-protobuf',
-      Accept: 'application/x-protobuf'
+      'Content-Type': 'application/json',
+      Accept: 'text/plain, application/json, audio/wav',
+      'function-id': nvidiaFunctionId,
+      'NVCF-Function-Id': nvidiaFunctionId
     },
     body: requestBody
   });
@@ -1987,15 +2050,11 @@ async function speakWithNvidiaTts(text, callback) {
     throw new Error(`NVIDIA TTS error: ${response.status} ${errorText}`.trim());
   }
 
-  const responseBuffer = await response.arrayBuffer();
-  let audioBytes;
-  try {
-    audioBytes = parseTtsResponse(responseBuffer);
-  } catch (error) {
-    audioBytes = new Uint8Array(responseBuffer);
-  }
-  const wavBlob = pcmToWav(audioBytes, 44100, 1, 16);
-  playAudioBlob(wavBlob, callback, '[Olanga] Done speaking (Magpie TTS)');
+  const contentType = response.headers.get('content-type') || '';
+  const audioBlob = contentType.includes('audio/')
+    ? await response.blob()
+    : pcmToWav(parseMagpieAudioText(await response.text()), 44100, 1, 16);
+  playAudioBlob(audioBlob, callback, '[Olanga] Done speaking (Magpie TTS)');
   return true;
 }
 
@@ -2027,7 +2086,7 @@ async function speakResponseAndThen(text, callback) {
     }
   }
 
-  showError('Please add an NVIDIA API key to use Magpie TTS.');
+  showError('Please add an NVIDIA API key to use TTS.');
   if (callback) callback();
   else setState(State.IDLE);
 }

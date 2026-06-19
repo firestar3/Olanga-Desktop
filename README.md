@@ -1,6 +1,6 @@
 # Olanga Voice Assistant
 
-Olanga is a completely hands-free, full-screen desktop AI voice assistant. Built on Electron, it runs silently in your system tray and listens for a wake word using a completely offline, local speech recognition model (Vosk). Once awakened, it leverages Google Gemini 2.5 for incredibly fast intelligence and multimodal vision, and NVIDIA's advanced Magpie models for hyper-realistic text-to-speech.
+Olanga is a completely hands-free, full-screen desktop AI voice assistant. Built on Electron, it runs silently in your system tray and listens for a wake word using a completely offline, local speech recognition model (Vosk). Once awakened, it leverages Google Gemini 2.5 for incredibly fast intelligence and multimodal vision, and NVIDIA's Magpie TTS voices for hyper-realistic text-to-speech.
 
 ## Features
 
